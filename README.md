@@ -2,20 +2,6 @@
 
 A FastAPI-based backend for resume analysis and job matching with AI-powered insights.
 
-## Features
-
-- **Authentication**
-  - Email/Password registration with OTP verification
-  - Google OAuth authentication
-  - Secure JWT-based authorization
-
-- **Resume Analysis**
-  - Check if a document is a resume
-  - Analyze resumes against job descriptions
-  - Get suggestions for resume improvements
-  - Section-specific improvement recommendations
-  - Extract text from PDF, DOCX, and TXT files
-  - Store original resume files in database
 
 ## Setup
 
