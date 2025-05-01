@@ -11,7 +11,7 @@ genai.configure(api_key=settings.GOOGLE_AI_API_KEY)
 
 async def is_resume_document(text: str) -> bool:
     try:
-        model = genai.GenerativeModel(model_name="gemini-1.5-flash")
+        model = genai.GenerativeModel(model_name=settings.GEMINI_MODEL_NAME)
 
         prompt = f"""You are a document classifier specializing in resume identification. 
 Analyze the following text and determine if it is a resume/CV document.
@@ -63,7 +63,7 @@ async def analyze_resume(
                 )
             )
 
-        model = genai.GenerativeModel(model_name="gemini-1.5-flash")
+        model = genai.GenerativeModel(model_name=settings.GEMINI_MODEL_NAME)
 
         prompt = f"""You are an expert ATS and resume analyzer. Analyze this resume {job_description and 'for the following job description' or 'in general'} and provide a detailed response in the following JSON format:
 {{
@@ -165,7 +165,7 @@ async def suggest_improvements(
     job_description: Optional[str] = None
 ) -> List[str]:
     try:
-        model = genai.GenerativeModel(model_name="gemini-1.5-flash")
+        model = genai.GenerativeModel(model_name=settings.GEMINI_MODEL_NAME)
 
         prompt = f"""You are an expert resume writer. Analyze this {section} section {job_description and 'for this specific job' or ''} and provide 3-5 specific improvements.
 

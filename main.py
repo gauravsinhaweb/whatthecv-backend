@@ -11,6 +11,7 @@ from app.db.base import Base, engine
 from app.models.user import User
 from app.models.otp import OTP
 from app.models.resume import Resume, JobDescription, ResumeAnalysis
+from app.utils.errors import AuthError
 
 app = FastAPI(title=settings.PROJECT_NAME)
 
@@ -43,7 +44,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 @app.get("/")
 def read_root():
-    return {"message": "Welcome to WhatTheCV API"}
+    return {"message": "We're up! 🍾"}
 
 app.include_router(auth.router, prefix=settings.API_V1_STR)
 app.include_router(resume.router, prefix=settings.API_V1_STR)

@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  api:
+  app:
     build: .
     container_name: whatthecv-api
     volumes:
@@ -25,5 +25,5 @@ services:
       - ./nginx/ssl:/etc/nginx/ssl
       - ./nginx/www:/var/www/html
     depends_on:
-      - api
+      - app
     restart: always 
