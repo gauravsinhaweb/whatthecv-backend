@@ -283,9 +283,12 @@ async def save_resume_file(db: Session, resume_id: str, filename: str, file_cont
     """
     file_size = len(file_content)
     
+    # Handle null or empty filename
+    safe_filename = filename or "unnamed_file"
+    
     resume_file = ResumeFile(
         resume_id=resume_id,
-        filename=filename,
+        filename=safe_filename,
         file_content=file_content,
         file_type=file_type,
         file_size=file_size
@@ -332,12 +335,15 @@ async def save_resume_with_file(
     Returns:
         Tuple of (Resume, ResumeFile)
     """
+    # Handle null or empty filename
+    safe_filename = filename or "unnamed_file"
+    
     # First save the resume text content
     is_resume_doc = await is_resume_document(text_content)
     
     resume = Resume(
         user_id=user_id,
-        filename=filename,
+        filename=safe_filename,
         content=text_content,
         is_resume=is_resume_doc
     )
@@ -347,6 +353,6 @@ async def save_resume_with_file(
     db.refresh(resume)
     
     # Then save the original file
-    resume_file = await save_resume_file(db, resume.id, filename, file_content, file_type)
+    resume_file = await save_resume_file(db, resume.id, safe_filename, file_content, file_type)
     
     return resume, resume_file 

@@ -19,7 +19,7 @@ from app.utils.supabase import (
     get_supabase_user
 )
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login", auto_error=False)
 
 async def create_user(db: Session, user_data: UserCreate) -> Tuple[User, Dict[str, Any]]:
     supabase_user = None
@@ -109,6 +109,15 @@ async def validate_token(token: str = Depends(oauth2_scheme), db: Session = Depe
 
 async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
     return await validate_token(token, db)
+
+async def get_optional_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> Optional[User]:
+    if not token:
+        return None
+    
+    try:
+        return await validate_token(token, db)
+    except HTTPException:
+        return None
 
 async def create_otp(db: Session, email: str, purpose: str) -> OTP:
     otp_code = generate_otp()

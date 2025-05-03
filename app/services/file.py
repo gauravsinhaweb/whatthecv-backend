@@ -26,6 +26,11 @@ async def extract_text_from_file(file: UploadFile) -> str:
     
     try:
         file_content = await file.read()
+        
+        # Check for null or empty filename
+        if file.filename is None:
+            raise ValueError("Filename is missing or null")
+            
         file_extension = os.path.splitext(file.filename)[1].lower()
         
         if file_extension == '.pdf':

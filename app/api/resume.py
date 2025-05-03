@@ -6,7 +6,7 @@ from typing import List, Optional, Any
 from app.db.base import get_db
 from app.models.user import User
 from app.models.resume import Resume, JobDescription, ResumeFile
-from app.services.auth import get_current_user
+from app.services.auth import get_current_user, get_optional_current_user
 from app.services.resume import (
     is_resume_document, analyze_resume, suggest_improvements, 
     save_resume, save_job_description, create_analysis,
@@ -36,7 +36,8 @@ async def check_if_resume(file: UploadFile = File(...)) -> Any:
 @router.post("/analyze", response_model=AIAnalysisResult)
 async def analyze_resume_text(
     resume_text: str, 
-    job_description: Optional[str] = None
+    job_description: Optional[str] = None,
+    current_user: Optional[User] = Depends(get_optional_current_user)
 ) -> Any:
     try:
         analysis = await analyze_resume(resume_text, job_description)
@@ -50,13 +51,15 @@ async def analyze_resume_text(
 @router.post("/improve-section", response_model=List[str])
 async def improve_section(
     improvement_data: SectionImprovement,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user)
 ) -> Any:
     try:
         job_description = None
-        if improvement_data.job_description_id:
+        if improvement_data.job_description_id and current_user:
             job = db.query(JobDescription).filter(
-                JobDescription.id == improvement_data.job_description_id
+                JobDescription.id == improvement_data.job_description_id,
+                JobDescription.user_id == current_user.id
             ).first()
             if job:
                 job_description = job.content
@@ -171,28 +174,34 @@ async def list_resume_files(
     List all resume files belonging to the current user
     Optionally filter by resume_id
     """
-    query = db.query(ResumeFile)
-    
-    if resume_id:
-        # Check if the resume belongs to the current user
-        resume = db.query(Resume).filter(
-            Resume.id == resume_id,
-            Resume.user_id == current_user.id
-        ).first()
+    try:
+        query = db.query(ResumeFile)
         
-        if not resume:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Resume not found"
-            )
+        if resume_id:
+            # Check if the resume belongs to the current user
+            resume = db.query(Resume).filter(
+                Resume.id == resume_id,
+                Resume.user_id == current_user.id
+            ).first()
+            
+            if not resume:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Resume not found"
+                )
+            
+            query = query.filter(ResumeFile.resume_id == resume_id)
+        else:
+            # Only return files for resumes that belong to the current user
+            query = query.join(Resume).filter(Resume.user_id == current_user.id)
         
-        query = query.filter(ResumeFile.resume_id == resume_id)
-    else:
-        # Only return files for resumes that belong to the current user
-        query = query.join(Resume).filter(Resume.user_id == current_user.id)
-    
-    resume_files = query.all()
-    return resume_files
+        resume_files = query.all()
+        return resume_files
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
 
 @router.post("/job", response_model=dict)
 async def create_job_description(

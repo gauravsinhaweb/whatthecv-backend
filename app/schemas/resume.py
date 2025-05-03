@@ -33,7 +33,7 @@ class ResumeResponse(BaseModel):
 class ResumeFileResponse(BaseModel):
     id: str
     resume_id: str
-    filename: str
+    filename: Optional[str] = "Unnamed file"
     file_type: str
     file_size: int
     created_at: datetime
