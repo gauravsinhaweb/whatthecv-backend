@@ -95,11 +95,12 @@ async def upload_resume(
 @router.post("/upload/with-file", response_model=dict)
 async def upload_resume_with_file(
     file: UploadFile = File(...),
-    current_user: User = Depends(get_current_user),
+    current_user: Optional[User] = Depends(get_optional_current_user),
     db: Session = Depends(get_db)
 ) -> Any:
     """
-    Upload a resume and store both the extracted text and the original file
+    Upload a resume and store both the extracted text and the original file.
+    Authentication is optional - unauthenticated uploads will not be linked to any user.
     """
     try:
         # Extract text from the file
@@ -110,9 +111,10 @@ async def upload_resume_with_file(
         file_content = await file.read()
         
         # Save both text content and file
+        user_id = current_user.id if current_user else None
         resume, resume_file = await save_resume_with_file(
             db,
-            current_user.id,
+            user_id,
             file.filename,
             text,
             file_content,

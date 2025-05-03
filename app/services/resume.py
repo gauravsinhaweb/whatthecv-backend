@@ -206,7 +206,7 @@ Focus on:
             "Include industry-specific keywords"
         ]
 
-async def save_resume(db: Session, user_id: str, filename: str, content: str) -> Resume:
+async def save_resume(db: Session, user_id: Optional[str], filename: str, content: str) -> Resume:
     is_resume_doc = await is_resume_document(content)
     
     resume = Resume(
@@ -315,7 +315,7 @@ async def get_resume_file(db: Session, file_id: str) -> Optional[ResumeFile]:
 
 async def save_resume_with_file(
     db: Session, 
-    user_id: str, 
+    user_id: Optional[str], 
     filename: str, 
     text_content: str,
     file_content: bytes,
@@ -326,7 +326,7 @@ async def save_resume_with_file(
     
     Args:
         db: Database session
-        user_id: User ID
+        user_id: User ID (can be None for unauthenticated uploads)
         filename: Original filename
         text_content: Extracted text from the resume
         file_content: Binary content of the file

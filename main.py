@@ -13,11 +13,20 @@ from app.models.otp import OTP
 from app.models.resume import Resume, JobDescription, ResumeAnalysis
 from app.utils.errors import AuthError
 
+# Import and run migrations
+from app.db.migrations.make_resume_user_id_nullable import upgrade as make_user_id_nullable
+
 app = FastAPI(title=settings.PROJECT_NAME)
 
 @app.on_event("startup")
 async def startup_event():
     Base.metadata.create_all(bind=engine)
+    
+    # Run migrations
+    try:
+        make_user_id_nullable(engine)
+    except Exception as e:
+        print(f"Migration error: {e}")
 
 app.add_middleware(
     CORSMiddleware,

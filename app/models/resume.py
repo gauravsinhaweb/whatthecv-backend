@@ -8,7 +8,7 @@ class Resume(Base):
     __tablename__ = "resumes"
 
     id = Column(String, primary_key=True, index=True, default=lambda: str(uuid.uuid4()))
-    user_id = Column(String, ForeignKey("users.id"))
+    user_id = Column(String, ForeignKey("users.id"), nullable=True)
     filename = Column(String)
     content = Column(Text)
     is_resume = Column(Boolean, default=True)
