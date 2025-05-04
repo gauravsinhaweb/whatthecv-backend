@@ -1,18 +1,18 @@
 {
   "builds": [
     {
-      "src": "api/index.py",
+      "src": "api/minimal.py",
       "use": "@vercel/python",
       "config": {
         "runtime": "python3.9",
-        "pip_requirements": "requirements-vercel.txt"
+        "pip_requirements": "requirements-minimal.txt"
       }
     }
   ],
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "api/index.py"
+      "dest": "api/minimal.py"
     }
   ],
   "env": {

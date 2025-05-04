@@ -103,23 +103,41 @@ async def upload_resume_with_file(
     Authentication is optional - unauthenticated uploads will not be linked to any user.
     """
     try:
-        # Extract text from the file
-        text = await extract_text_from_file(file)
+        # Step 1: Extract text from the file
+        try:
+            text = await extract_text_from_file(file)
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Text extraction failed: {str(e)}"
+            )
         
-        # Reset file position to read binary content
-        await file.seek(0)
-        file_content = await file.read()
+        # Step 2: Reset file position to read binary content
+        try:
+            await file.seek(0)
+            file_content = await file.read()
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"File reading failed: {str(e)}"
+            )
         
-        # Save both text content and file
-        user_id = current_user.id if current_user else None
-        resume, resume_file = await save_resume_with_file(
-            db,
-            user_id,
-            file.filename,
-            text,
-            file_content,
-            file.content_type
-        )
+        # Step 3: Save both text content and file
+        try:
+            user_id = current_user.id if current_user else None
+            resume, resume_file = await save_resume_with_file(
+                db,
+                user_id,
+                file.filename,
+                text,
+                file_content,
+                file.content_type
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Database save operation failed: {str(e)}"
+            )
         
         return {
             "resume_id": resume.id,
@@ -128,11 +146,62 @@ async def upload_resume_with_file(
             "is_resume": resume.is_resume,
             "file_size": resume_file.file_size
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unexpected error: {str(e)}"
         )
+
+@router.post("/debug/with-file", response_model=dict)
+async def debug_upload_with_file(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+) -> Any:
+    """
+    Debug endpoint for the upload/with-file functionality
+    """
+    try:
+        # Step 1: Extract file details
+        step1 = {
+            "filename": file.filename,
+            "content_type": file.content_type
+        }
+        
+        # Step 2: Read file content
+        file_content = await file.read()
+        step2 = {
+            "file_size": len(file_content),
+            "file_read": True
+        }
+        
+        # Step 3: Reset file position
+        await file.seek(0)
+        step3 = {"file_position_reset": True}
+        
+        # Step 4: Check database connection
+        try:
+            db_session = next(db)
+            step4 = {"database_connection": "success"}
+        except Exception as db_error:
+            step4 = {"database_connection": "failed", "error": str(db_error)}
+        
+        return {
+            "message": "Debug information for file upload",
+            "steps": {
+                "1_file_details": step1,
+                "2_file_content": step2,
+                "3_file_reset": step3,
+                "4_database": step4
+            }
+        }
+    except Exception as e:
+        return {
+            "message": "Error in debug endpoint",
+            "error": str(e),
+            "error_type": type(e).__name__
+        }
 
 @router.get("/files/{file_id}", response_class=StreamingResponse)
 async def download_resume_file(
