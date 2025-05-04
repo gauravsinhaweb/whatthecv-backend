@@ -70,3 +70,4 @@ pids
 # SSL certificates
 nginx/ssl/*.pem
 nginx/ssl/*.key 
+.vercel
