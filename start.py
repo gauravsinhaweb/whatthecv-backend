@@ -79,6 +79,7 @@ def run_migrations():
 
 def start_server(port=8000, reload=True):
     """Start the FastAPI server using uvicorn"""
+    port = int(os.environ.get("PORT", port))
     print(f"Starting server on port {port}...")
     args = ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", str(port)]
     

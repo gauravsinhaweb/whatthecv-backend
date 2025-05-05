@@ -7,6 +7,14 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
+      - key: DATABASE_URL
+        fromDatabase:
+          name: whatthecv-db
+          property: connectionString
     healthCheckPath: /
     plan: free
-    autoDeploy: true 
+    autoDeploy: true
+
+databases:
+  - name: whatthecv-db
+    plan: free 
