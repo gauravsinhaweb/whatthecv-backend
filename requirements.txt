@@ -12,6 +12,6 @@ PyPDF2==3.0.1
 mammoth==1.9.0
 python-dotenv==1.1.0
 email_validator==2.2.0
-httpx==0.28.1
+httpx==0.24.1
 psycopg2-binary==2.9.6
 supabase==1.2.0
