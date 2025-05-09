@@ -2,16 +2,34 @@ import google.generativeai as genai
 from typing import Dict, List, Any, Optional
 import json
 import re
+import logging
 
 from app.core.config import settings
 
-genai.configure(api_key=settings.GOOGLE_AI_API_KEY)
+# Configure logging
+logger = logging.getLogger(__name__)
+
+# Only configure Google AI if an API key is provided
+has_google_ai = False
+try:
+    if settings.GOOGLE_AI_API_KEY:
+        genai.configure(api_key=settings.GOOGLE_AI_API_KEY)
+        has_google_ai = True
+    else:
+        logger.warning("Google AI API key is not set, resume enhancement will use fallback mode")
+except Exception as e:
+    logger.error(f"Failed to configure Google AI: {str(e)}")
 
 async def enhance_resume(resume_text: str) -> Dict[str, Any]:
     """
     Enhance a resume by extracting structured information and optimizing content for ATS compatibility
     """
     try:
+        # Check if Google AI is available
+        if not has_google_ai:
+            # Fallback mode: extract basic structure without enhancement
+            return await extract_resume_structure_fallback(resume_text)
+            
         # Extract structured information from the resume
         structure = await extract_resume_structure(resume_text)
 
@@ -20,7 +38,7 @@ async def enhance_resume(resume_text: str) -> Dict[str, Any]:
         # Calculate total number of projects to adjust description length
         total_projects = len(structure.get('projects', []))
 
-        print("Enhancing resume for ATS optimization...")
+        logger.info("Enhancing resume for ATS optimization...")
 
         # Process each section in parallel - focus on ATS optimization of existing content
         work_experience = []
@@ -59,7 +77,7 @@ async def enhance_resume(resume_text: str) -> Dict[str, Any]:
         if total_work_experiences <= 2:
             summary = await enhance_resume_section('summary', structure.get('personalInfo', {}).get('summary', ''))
 
-        print("Resume enhanced for ATS optimization successfully")
+        logger.info("Resume enhanced for ATS optimization successfully")
 
         # Construct the enhanced resume with ATS-optimized content
         return {
@@ -73,8 +91,156 @@ async def enhance_resume(resume_text: str) -> Dict[str, Any]:
             "projects": enhanced_projects
         }
     except Exception as e:
-        print(f'Resume enhancement failed: {e}')
-        raise
+        logger.error(f'Resume enhancement failed: {str(e)}', exc_info=True)
+        # Fallback to basic extraction when enhancement fails
+        return await extract_resume_structure_fallback(resume_text)
+
+# Add fallback extraction function
+async def extract_resume_structure_fallback(resume_text: str) -> Dict[str, Any]:
+    """
+    Basic fallback function to extract resume structure when Google AI is not available
+    """
+    logger.info("Using fallback resume extraction without AI enhancement")
+    
+    # Split the resume into sections
+    sections = re.split(r'\n\s*\n', resume_text)
+    
+    # Basic extraction logic
+    personal_info = {}
+    work_experience = []
+    education = []
+    skills = []
+    projects = []
+    
+    # Extract name and contact from first section
+    if sections:
+        first_section = sections[0]
+        lines = first_section.strip().split('\n')
+        if lines:
+            # First line is usually the name
+            personal_info['name'] = lines[0].strip()
+            
+            # Look for email and phone in subsequent lines
+            for line in lines[1:]:
+                # Email pattern
+                email_match = re.search(r'[\w\.-]+@[\w\.-]+', line)
+                if email_match and 'email' not in personal_info:
+                    personal_info['email'] = email_match.group(0)
+                
+                # Phone pattern
+                phone_match = re.search(r'(?:\+\d{1,2}\s?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}', line)
+                if phone_match and 'phone' not in personal_info:
+                    personal_info['phone'] = phone_match.group(0)
+    
+    # Process remaining sections
+    for section in sections[1:]:
+        # Skip empty sections
+        if not section.strip():
+            continue
+            
+        lines = section.strip().split('\n')
+        section_title = lines[0].lower() if lines else ""
+        
+        # Experience section
+        if any(keyword in section_title for keyword in ['experience', 'work', 'employment']):
+            company_pattern = r'(?:at|with)?\s*([A-Z][A-Za-z0-9\s&\.,]+)'
+            date_pattern = r'(\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}\s*(?:-|to|–)\s*(?:Present|Current|Now|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}))'
+            
+            company = None
+            title = None
+            dates = None
+            description = "\n".join(lines[1:]) if len(lines) > 1 else ""
+            
+            # Try to extract company
+            for line in lines:
+                company_match = re.search(company_pattern, line, re.IGNORECASE)
+                if company_match:
+                    company = company_match.group(1).strip()
+                    break
+            
+            # Try to extract title from first or second line
+            if len(lines) > 1:
+                title_candidates = [lines[1], lines[0]] if len(lines) > 1 else [lines[0]]
+                for candidate in title_candidates:
+                    if (company and company not in candidate) or not company:
+                        title = candidate.strip()
+                        break
+            
+            # Try to extract dates
+            for line in lines:
+                date_match = re.search(date_pattern, line)
+                if date_match:
+                    dates = date_match.group(1)
+                    break
+            
+            work_experience.append({
+                "company": company or "Unknown Company",
+                "title": title or "Position",
+                "dates": dates or "Unknown Date Range",
+                "description": description
+            })
+        
+        # Education section
+        elif any(keyword in section_title for keyword in ['education', 'degree', 'university', 'college']):
+            school = None
+            degree = None
+            dates = None
+            
+            # Try to extract school and degree
+            for line in lines[1:]:
+                if not school and any(keyword in line.lower() for keyword in ['university', 'college', 'institute', 'school']):
+                    school = line.strip()
+                elif not degree and any(keyword in line.lower() for keyword in ['bachelor', 'master', 'phd', 'degree', 'diploma']):
+                    degree = line.strip()
+            
+            education.append({
+                "school": school or "Unknown Institution",
+                "degree": degree or "Degree",
+                "dates": dates or ""
+            })
+        
+        # Skills section
+        elif any(keyword in section_title for keyword in ['skill', 'technologies', 'proficiency', 'proficient']):
+            section_content = "\n".join(lines[1:]) if len(lines) > 1 else ""
+            
+            # Extract skills from lists or comma-separated values
+            skill_items = []
+            for line in section_content.split('\n'):
+                if ',' in line:
+                    # Comma-separated list
+                    skill_items.extend([s.strip() for s in line.split(',') if s.strip()])
+                else:
+                    # Bullet point or plain text
+                    cleaned = re.sub(r'^[\s•\-–—*]+', '', line).strip()
+                    if cleaned:
+                        skill_items.append(cleaned)
+            
+            skills = filter_skills(skill_items)
+        
+        # Projects section
+        elif any(keyword in section_title for keyword in ['project', 'portfolio']):
+            project_name = None
+            description = ""
+            technologies = ""
+            
+            # Try to extract project name from first line after title
+            if len(lines) > 1:
+                project_name = lines[1].strip()
+                description = "\n".join(lines[2:]) if len(lines) > 2 else ""
+            
+            projects.append({
+                "name": project_name or "Project",
+                "description": description,
+                "technologies": technologies
+            })
+    
+    return {
+        "personalInfo": personal_info,
+        "workExperience": work_experience,
+        "education": education,
+        "skills": skills,
+        "projects": projects
+    }
 
 def filter_skills(skills: List[str]) -> List[str]:
     """Filter and standardize skills for ATS compatibility"""

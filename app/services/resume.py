@@ -4,10 +4,13 @@ from typing import Optional, List, Dict, Any, Tuple
 import json
 import re
 import uuid
+import logging
+import traceback
+from datetime import datetime
 
 from app.core.config import settings
 from app.models.doc import Doc, DocType, doc_relationships
-from app.schemas.resume import AIAnalysisResult, Suggestion, KeywordMatch, SectionAnalysis, ResumeAnalysisCreate
+from app.schemas.resume import AIAnalysisResult, Suggestion, KeywordMatch, SectionAnalysis, ResumeAnalysisCreate, PersonalInfo
 from app.services.file import extract_text_from_file
 from app.services.resume_parser import extract_personal_info
 from app.services.doc import create_document
@@ -147,185 +150,160 @@ async def analyze_resume(
     doc_id: Optional[str] = None,
     db: Optional[Session] = None
 ) -> AIAnalysisResult:
+    """
+    Analyze a resume with AI and generate a complete analysis
+    
+    Args:
+        resume_text: Text content of the resume
+        job_description: Optional job description to tailor analysis
+        doc_id: Optional document ID to update with analysis results
+        db: Optional database session for updating document
+        
+    Returns:
+        AIAnalysisResult: Complete analysis of the resume
+    """
+    # Extract personal information for the resume
+    personal_info = await extract_personal_info(resume_text)
+    logger = logging.getLogger(__name__)
+    
     try:
-        # Extract personal information from the resume
-        personal_info = await extract_personal_info(resume_text)
-        
-        # Check if valid resume
-        resume_check = await is_resume_document(resume_text)
-        
-        if not resume_check["is_resume"]:
-            return AIAnalysisResult(
-                score=0,
-                isResume=False,
-                suggestions=[
-                    Suggestion(
-                        section="Document Type",
-                        improvements=[
-                            "The uploaded document doesn't appear to be a resume or CV.",
-                            "Please upload a resume document for proper analysis.",
-                            "A resume should include work experience, education, and skills sections."
-                        ]
-                    )
-                ],
-                keywords=KeywordMatch(
-                    matched=[],
-                    missing=[]
-                ),
-                personal_info=personal_info
-            )
-
-        model = genai.GenerativeModel(
-            model_name=settings.GEMINI_MODEL_NAME,
-            generation_config={"temperature": 0.2, "top_p": 0.8, "top_k": 40}
-        )
-
-        # First, extract key sections and perform a preliminary analysis
-        sections_prompt = f"""Analyze this resume and extract the key sections with their content.
-Identify these standard resume sections:
-- Contact Information/Personal Details
-- Professional Summary/Objective
-- Work Experience/Employment History
-- Education
-- Skills
-- Projects
-- Certifications
-- Languages
-- Publications
-- Volunteer Experience
-- Awards
-
-For each section, extract:
-1. The section name
-2. The specific content
-3. Key strengths of this section
-4. Major weaknesses or areas for improvement
-
-Return as a clean JSON object like this:
-{{
-  "sections": [
-    {{
-      "name": "section name",
-      "content": "extracted content",
-      "strengths": ["strength 1", "strength 2"],
-      "weaknesses": ["weakness 1", "weakness 2"]
-    }}
-  ]
-}}
-
-Resume:
-{resume_text}"""
-
         try:
-            sections_result = await model.generate_content(sections_prompt)
-            sections_text = sections_result.text
+            # Generate the AI analysis
+            model = genai.GenerativeModel(model_name=settings.GEMINI_MODEL_NAME)
             
-            # Extract JSON from the response
-            sections_json_str = re.search(r'\{.*\}', sections_text, re.DOTALL)
-            if sections_json_str:
-                sections_data = json.loads(sections_json_str.group(0))
-            else:
-                sections_data = {"sections": []}
-        except Exception as e:
-            print(f"Section extraction failed: {e}")
-            sections_data = {"sections": []}
+            # Build the analysis prompt
+            prompt = f"""Analyze this resume for quality and ATS compatibility. Provide a detailed breakdown of its strengths and weaknesses.
 
-        # Main analysis prompt with detailed instructions
-        main_prompt = f"""You are an expert ATS resume analyzer with deep experience in hiring and recruitment.
-Analyze this resume {job_description and 'for the job description provided below' or 'for general job market competitiveness'}.
+Resume text:
+{resume_text[:7000]} 
 
-Your analysis should be comprehensive and focus on:
-1. ATS compatibility and optimization - Will this resume pass ATS filters?
-2. Content quality - Does it effectively communicate value and achievements?
-3. Format and structure - Is it well-organized and professional?
-4. Keyword optimization - Does it include relevant industry and role-specific terms?
-5. Quantifiable achievements - Are accomplishments measurable and results-oriented?
+Respond with a JSON object containing:
+- score (0-100): Overall quality score
+- ats_score (0-100): How well optimized for Applicant Tracking Systems 
+- content_score (0-100): Quality of content and achievements
+- format_score (0-100): Structure and formatting quality
+- suggestions: Array of {{section, improvements}} where improvements is an array of suggestion strings
+- keywords: {{matched: [array of keywords found], missing: [important keywords that should be added]}}
 
-{job_description and 'CRITICAL: Your analysis must specifically evaluate how well this resume matches the provided job description requirements and qualifications.' or ''}
-
-Return your analysis as a JSON object with the following structure:
+Example response format:
 {{
-  "score": <number between 0-100 representing overall effectiveness>,
+  "score": 75,
+  "ats_score": 70,
+  "content_score": 80,
+  "format_score": 75,
   "suggestions": [
     {{
-      "section": "<section name>",
-      "improvements": ["<specific actionable improvement 1>", "<improvement 2>", ...]
+      "section": "Experience",
+      "improvements": ["Add more quantifiable achievements", "Use stronger action verbs"] 
+    }},
+    {{
+      "section": "Skills",
+      "improvements": ["Add more technical skills", "Organize skills by category"]
     }}
   ],
   "keywords": {{
-    "matched": ["<important keyword 1 found in resume>", "<keyword 2>", ...],
-    "missing": ["<important keyword 1 missing from resume>", "<keyword 2>", ...]
-  }},
-  "ats_score": <number between 0-100 for ATS compatibility>,
-  "content_score": <number between 0-100 for content quality>,
-  "format_score": <number between 0-100 for formatting and structure>
-}}
+    "matched": ["project management", "agile", "leadership"],
+    "missing": ["scrum", "kanban", "stakeholder management"]
+  }}
+}}"""
 
-Base your scores on these criteria:
-- ATS Score: Proper formatting, appropriate keywords, lack of tables/images/charts, standard section headings
-- Content Score: Specific achievements, quantifiable results, relevant experience, focused skills
-- Format Score: Clean layout, consistent formatting, appropriate length, scannable structure
+            if job_description:
+                prompt += f"\n\nAlso analyze how well the resume matches this job description:\n{job_description[:3000]}"
+            
+            # Generate the analysis
+            result = model.generate_content(prompt)
+            text = result.text
+            
+            # Extract the JSON part
+            start_index = text.find('{')
+            end_index = text.rfind('}') + 1
+            if start_index >= 0 and end_index > start_index:
+                json_text = text[start_index:end_index]
+                # Parse the JSON
+                analysis_json = json.loads(json_text)
+            else:
+                raise ValueError("Failed to extract JSON from the response")
+            
+            # Section extraction
+            section_prompt = f"""Extract the major sections from this resume and provide an analysis of each section.
 
-Your analysis MUST be returned as valid JSON only with no additional text."""
+Resume text:
+{resume_text[:7000]}
 
-        if job_description:
-            main_prompt += f"\n\nJob Description:\n{job_description}\n"
-
-        # Add the previously extracted sections analysis if available
-        if sections_data and "sections" in sections_data and len(sections_data["sections"]) > 0:
-            main_prompt += "\n\nPreliminary Section Analysis:\n" + json.dumps(sections_data, indent=2) + "\n"
-
-        main_prompt += f"\n\nResume:\n{resume_text}"
-
-        try:
-            result = await model.generate_content(main_prompt)
-            response_text = result.text
+Respond with JSON:
+{{
+  "sections": [
+    {{
+      "name": "Experience",
+      "content": "extracted content...",
+      "strengths": ["strength 1", "strength 2"],
+      "weaknesses": ["weakness 1", "weakness 2"]
+    }},
+    {{
+      "name": "Education",
+      "content": "extracted content...",
+      "strengths": ["strength 1"],
+      "weaknesses": ["weakness 1"]
+    }}
+  ]
+}}"""
             
             try:
-                # Try direct JSON parsing
-                analysis_json = json.loads(response_text)
-            except json.JSONDecodeError:
-                # Extract JSON if there's additional text
-                json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-                if json_match:
-                    analysis_json = json.loads(json_match.group(0))
+                section_result = model.generate_content(section_prompt)
+                sections_text = section_result.text
+                
+                # Extract the JSON part
+                start_index = sections_text.find('{')
+                end_index = sections_text.rfind('}') + 1
+                if start_index >= 0 and end_index > start_index:
+                    sections_json = sections_text[start_index:end_index]
+                    # Parse the JSON
+                    sections_data = json.loads(sections_json)
                 else:
-                    # Retry with a stronger instruction for valid JSON
-                    result = await model.generate_content(main_prompt + "\n\nIMPORTANT: Return ONLY valid JSON with no additional text.")
-                    text = result.text
-                    analysis_json = json.loads(re.search(r'\{.*\}', text, re.DOTALL).group(0))
+                    sections_data = None
+            except Exception as e:
+                logger.error(f"Section extraction failed: {e}")
+                sections_data = None
             
-            # Ensure all expected fields exist
+            # Ensure all required fields are present
             analysis_json["score"] = analysis_json.get("score", 70)
             analysis_json["suggestions"] = analysis_json.get("suggestions", [])
             analysis_json["keywords"] = analysis_json.get("keywords", {"matched": [], "missing": []})
             
-            # Create the analysis result
+            # Convert Suggestion and KeywordMatch objects to dictionaries for AIAnalysisResult
+            suggestions_list = []
+            for item in analysis_json["suggestions"]:
+                suggestions_list.append({
+                    "section": item["section"],
+                    "improvements": item["improvements"]
+                })
+                
+            keywords_dict = {
+                "matched": analysis_json["keywords"]["matched"],
+                "missing": analysis_json["keywords"]["missing"]
+            }
+            
+            sections_analysis_list = None
+            if sections_data and "sections" in sections_data:
+                sections_analysis_list = []
+                for section in sections_data["sections"]:
+                    sections_analysis_list.append({
+                        "name": section.get("name", ""),
+                        "content": section.get("content", ""),
+                        "strengths": section.get("strengths", []),
+                        "weaknesses": section.get("weaknesses", [])
+                    })
+            
+            # Create the analysis result using dictionaries instead of model objects
             analysis_result = AIAnalysisResult(
                 score=analysis_json["score"],
-                isResume=True,
-                suggestions=[
-                    Suggestion(
-                        section=item["section"],
-                        improvements=item["improvements"]
-                    ) for item in analysis_json["suggestions"]
-                ],
-                keywords=KeywordMatch(
-                    matched=analysis_json["keywords"]["matched"],
-                    missing=analysis_json["keywords"]["missing"]
-                ),
                 ats_score=analysis_json.get("ats_score"),
                 content_score=analysis_json.get("content_score"),
                 format_score=analysis_json.get("format_score"),
-                sections_analysis=[
-                    SectionAnalysis(
-                        name=section.get("name"),
-                        content=section.get("content"),
-                        strengths=section.get("strengths", []),
-                        weaknesses=section.get("weaknesses", [])
-                    ) for section in sections_data.get("sections", [])
-                ] if sections_data and "sections" in sections_data else None,
-                personal_info=personal_info
+                suggestions=suggestions_list,
+                keywords=keywords_dict,
+                sections_analysis=sections_analysis_list,
+                extracted_text=resume_text
             )
             
             # If doc_id is provided, update the document with analysis results
@@ -352,46 +330,46 @@ Your analysis MUST be returned as valid JSON only with no additional text."""
                         
                         # Update the database
                         db.commit()
-                        print(f"Updated document {doc_id} with analysis results")
+                        logger.info(f"Updated document {doc_id} with analysis results")
                 except Exception as e:
-                    print(f"Error updating document with analysis results: {e}")
+                    logger.error(f"Error updating document with analysis results: {e}")
             
             return analysis_result
         except Exception as e:
-            print(f"AI analysis failed: {e}")
+            logger.error(f"AI analysis failed: {e}")
+            # Create a fallback analysis result using dictionaries
             return AIAnalysisResult(
                 score=70,
-                isResume=True,
+                ats_score=65,
+                content_score=70,
+                format_score=75,
                 suggestions=[
-                    Suggestion(
-                        section="General",
-                        improvements=[
+                    {
+                        "section": "General",
+                        "improvements": [
                             "Add more quantifiable achievements",
                             "Improve formatting for better ATS compatibility",
                             "Enhance skill descriptions with specific examples"
                         ]
-                    ),
-                    Suggestion(
-                        section="Experience",
-                        improvements=[
+                    },
+                    {
+                        "section": "Experience",
+                        "improvements": [
                             "Include measurable results for each role",
                             "Use more action verbs to describe responsibilities",
                             "Tailor achievements to target industry keywords"
                         ]
-                    )
+                    }
                 ],
-                keywords=KeywordMatch(
-                    matched=["skills", "experience", "education"],
-                    missing=["metrics", "achievements", "keywords"]
-                ),
-                ats_score=65,
-                content_score=70,
-                format_score=75,
+                keywords={
+                    "matched": ["skills", "experience", "education"],
+                    "missing": ["metrics", "achievements", "keywords"]
+                },
                 sections_analysis=None,
-                personal_info=personal_info
+                extracted_text=resume_text
             )
     except Exception as e:
-        print(f"Resume analysis error: {e}")
+        logger.error(f"Resume analysis error: {e}")
         raise
 
 async def suggest_improvements(
