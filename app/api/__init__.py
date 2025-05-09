@@ -1,1 +1,1 @@
-from app.api import auth, resume
+from . import auth, resume, doc

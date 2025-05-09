@@ -1,32 +1,72 @@
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Response
-from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict
 
 from app.db.base import get_db
 from app.models.user import User
-from app.models.resume import Resume, JobDescription, ResumeFile
+from app.models.doc import Doc, DocType, doc_relationships
 from app.services.auth import get_current_user, get_optional_current_user
 from app.services.resume import (
     is_resume_document, analyze_resume, suggest_improvements, 
-    save_resume, save_job_description, create_analysis,
-    save_resume_file, get_resume_file, save_resume_with_file
+    save_resume, save_job_description, create_analysis
 )
 from app.services.file import extract_text_from_file
 from app.schemas.resume import (
     AIAnalysisResult, ResumeResponse, ResumeAnalysisCreate, 
-    ResumeAnalysisResponse, SectionImprovement, ResumeFileResponse
+    ResumeAnalysisResponse, SectionImprovement, ResumeCheckResult
 )
-import io
 
 router = APIRouter(prefix="/resume", tags=["resume"])
 
-@router.post("/check", response_model=dict)
-async def check_if_resume(file: UploadFile = File(...)) -> Any:
+@router.post("/check", response_model=ResumeCheckResult)
+async def check_if_resume(
+    file: Optional[UploadFile] = File(None),
+    text: Optional[str] = None,
+    return_text: Optional[bool] = False
+) -> Any:
+    """
+    Check if the provided content is a resume.
+    Can accept either an uploaded file or direct text input.
+    
+    Parameters:
+    - file: Optional file upload
+    - text: Optional text content
+    - return_text: If True, returns the extracted text with the result
+    
+    Returns enhanced information about resume detection:
+    - is_resume: Boolean indicating if the document is a resume
+    - confidence: Confidence score (0-1)
+    - detected_sections: List of detected resume sections
+    - reasoning: Explanation of the decision
+    - extracted_text: Only included if return_text=True
+    """
     try:
-        text = await extract_text_from_file(file)
-        is_resume = await is_resume_document(text)
-        return {"is_resume": is_resume}
+        # If text is provided directly, use that
+        if text:
+            resume_text = text
+        # Otherwise extract from file
+        elif file:
+            resume_text = await extract_text_from_file(file)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Either file or text must be provided"
+            )
+            
+        detection_result = await is_resume_document(resume_text)
+        
+        response = {
+            "is_resume": detection_result["is_resume"],
+            "confidence": detection_result["confidence"],
+            "detected_sections": detection_result["detected_sections"],
+            "reasoning": detection_result["reasoning"]
+        }
+        
+        # Optionally include the extracted text in the response
+        if return_text:
+            response["extracted_text"] = resume_text
+            
+        return response
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -99,11 +139,11 @@ async def upload_resume_with_file(
     db: Session = Depends(get_db)
 ) -> Any:
     """
-    Upload a resume and store both the extracted text and the original file.
+    Upload a resume and store only the extracted text (no longer storing the original file).
     Authentication is optional - unauthenticated uploads will not be linked to any user.
     """
     try:
-        # Step 1: Extract text from the file
+        # Extract text from the file
         try:
             text = await extract_text_from_file(file)
         except Exception as e:
@@ -112,26 +152,15 @@ async def upload_resume_with_file(
                 detail=f"Text extraction failed: {str(e)}"
             )
         
-        # Step 2: Reset file position to read binary content
-        try:
-            await file.seek(0)
-            file_content = await file.read()
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"File reading failed: {str(e)}"
-            )
-        
-        # Step 3: Save both text content and file
+        # Save only text content
         try:
             user_id = current_user.id if current_user else None
-            resume, resume_file = await save_resume_with_file(
+            # Modified to only save resume text, not file content
+            resume = await save_resume(
                 db,
                 user_id,
                 file.filename,
-                text,
-                file_content,
-                file.content_type
+                text
             )
         except Exception as e:
             raise HTTPException(
@@ -141,10 +170,8 @@ async def upload_resume_with_file(
         
         return {
             "resume_id": resume.id,
-            "file_id": resume_file.id,
             "filename": resume.filename,
-            "is_resume": resume.is_resume,
-            "file_size": resume_file.file_size
+            "is_resume": resume.is_resume
         }
     except HTTPException:
         raise
@@ -203,77 +230,6 @@ async def debug_upload_with_file(
             "error_type": type(e).__name__
         }
 
-@router.get("/files/{file_id}", response_class=StreamingResponse)
-async def download_resume_file(
-    file_id: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-) -> Any:
-    """
-    Download the original resume file
-    """
-    resume_file = await get_resume_file(db, file_id)
-    
-    if not resume_file:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="File not found"
-        )
-    
-    # Get the associated resume to check ownership
-    resume = db.query(Resume).filter(Resume.id == resume_file.resume_id).first()
-    if not resume or resume.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You don't have permission to access this file"
-        )
-    
-    # Return the file as a streaming response
-    return StreamingResponse(
-        io.BytesIO(resume_file.file_content),
-        media_type=resume_file.file_type,
-        headers={"Content-Disposition": f"attachment; filename={resume_file.filename}"}
-    )
-
-@router.get("/files", response_model=List[ResumeFileResponse])
-async def list_resume_files(
-    resume_id: Optional[str] = None,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-) -> Any:
-    """
-    List all resume files belonging to the current user
-    Optionally filter by resume_id
-    """
-    try:
-        query = db.query(ResumeFile)
-        
-        if resume_id:
-            # Check if the resume belongs to the current user
-            resume = db.query(Resume).filter(
-                Resume.id == resume_id,
-                Resume.user_id == current_user.id
-            ).first()
-            
-            if not resume:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Resume not found"
-                )
-            
-            query = query.filter(ResumeFile.resume_id == resume_id)
-        else:
-            # Only return files for resumes that belong to the current user
-            query = query.join(Resume).filter(Resume.user_id == current_user.id)
-        
-        resume_files = query.all()
-        return resume_files
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        )
-
 @router.post("/job", response_model=dict)
 async def create_job_description(
     title: str = Form(...),
@@ -328,5 +284,249 @@ async def analyze_saved_resume(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+@router.post("/enhance", response_model=dict)
+async def enhance_resume_text(
+    resume_text: str, 
+    current_user: Optional[User] = Depends(get_optional_current_user),
+    db: Session = Depends(get_db)
+) -> Any:
+    """
+    Enhance a resume by extracting structured information and optimizing content for ATS.
+    """
+    try:
+        from app.services.resume_enhance import enhance_resume
+        enhanced_data = await enhance_resume(resume_text)
+        return enhanced_data
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+@router.post("/extract-text", response_model=dict)
+async def extract_resume_text_only(
+    file: UploadFile = File(...),
+) -> Any:
+    """
+    Extract text from a resume file without saving it to the database.
+    Returns only the extracted text.
+    """
+    try:
+        text = await extract_text_from_file(file)
+        return {"text": text}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+@router.post("/process-file", response_model=AIAnalysisResult)
+async def process_resume_file(
+    file: UploadFile = File(...),
+    job_description: Optional[str] = Form(None),
+    current_user: Optional[User] = Depends(get_optional_current_user),
+    db: Session = Depends(get_db)
+) -> Any:
+    """
+    Process a resume file in one step: extract text and analyze it.
+    This endpoint handles the binary file directly, extracting text on the backend.
+    
+    Args:
+        file: The resume file to process
+        job_description: Optional job description to tailor the analysis
+        current_user: Optional authenticated user
+        
+    Returns:
+        AIAnalysisResult: Complete analysis of the resume
+    """
+    try:
+        # Extract text from the file
+        extracted_text = await extract_text_from_file(file)
+        
+        if not extracted_text or len(extracted_text.strip()) < 50:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Could not extract sufficient text from the resume file. The file may be corrupted, password-protected, or contain only images."
+            )
+        
+        # Always save to Doc table regardless of authentication
+        text_doc_id = None
+        
+        # Create document in the Doc table
+        from app.services.doc import create_document
+        from app.models.doc import DocType
+        from app.services.resume_parser import extract_personal_info
+        
+        # Extract personal info
+        personal_info = await extract_personal_info(extracted_text)
+        
+        # Create the text document with new field names
+        doc_data = {
+            "user_id": current_user.id if current_user else None,
+            "doc_type": DocType.RESUME.value,
+            "file_name": file.filename or "Untitled Resume",
+            "extracted_text": extracted_text,
+            "metadata": {
+                "is_resume": True,
+                **personal_info  # Include personal info in metadata for compatibility
+            }
+        }
+        
+        try:
+            # Create text document
+            text_doc = await create_document(db, doc_data)
+            text_doc_id = text_doc.id
+            
+            # No longer creating a file document to store binary content
+            file_doc_id = None
+            
+            print(f"Successfully saved to Doc table: text_doc.id={text_doc_id}")
+        except Exception as db_error:
+            # Don't swallow database errors - they should cause API errors
+            import traceback
+            error_msg = f"Failed to save documents to database: {str(db_error)}"
+            traceback.print_exc()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=error_msg
+            )
+        
+        # Analyze the extracted text - pass the doc_id and db to update metadata with analysis results
+        analysis_result = await analyze_resume(
+            resume_text=extracted_text, 
+            job_description=job_description,
+            doc_id=text_doc_id,
+            db=db
+        )
+        
+        # Add only the text document ID to the result
+        if text_doc_id:
+            if not hasattr(analysis_result, "doc_ids"):
+                analysis_result.doc_ids = {}
+            analysis_result.doc_ids = {
+                "text_doc_id": text_doc_id
+            }
+        
+        return analysis_result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+@router.post("/save-to-doc", response_model=Dict[str, str])
+async def save_resume_to_doc_table(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+) -> Any:
+    """
+    Save a resume file directly to the Doc table.
+    This endpoint is specifically for testing Doc table storage.
+    
+    Args:
+        file: The resume file to process
+        current_user: Authenticated user
+        
+    Returns:
+        Dict with document IDs
+    """
+    try:
+        # Extract text from the file
+        extracted_text = await extract_text_from_file(file)
+        
+        if not extracted_text or len(extracted_text.strip()) < 50:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Could not extract sufficient text from the resume file. The file may be corrupted, password-protected, or contain only images."
+            )
+        
+        # No longer need to read file content since we're not storing binary data
+        
+        # Create document in the Doc table
+        from app.services.doc import create_document
+        from app.models.doc import DocType
+        from app.services.resume_parser import extract_personal_info
+        
+        # Extract personal info
+        personal_info = await extract_personal_info(extracted_text)
+        
+        # Create the text document using new field names
+        doc_data = {
+            "user_id": current_user.id,
+            "doc_type": DocType.RESUME.value,
+            "file_name": file.filename,
+            "extracted_text": extracted_text,
+            "metadata": {
+                "is_resume": True,
+                **personal_info
+            }
+        }
+        
+        text_doc = await create_document(db, doc_data)
+        
+        # No longer creating file document with binary content
+        
+        return {
+            "text_doc_id": text_doc.id,
+            "message": "Successfully saved resume to Doc table"
+        }
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error saving to Doc table: {str(e)}"
+        )
+
+@router.post("/check-file", response_model=ResumeCheckResult)
+async def check_if_file_is_resume(
+    file: UploadFile = File(...),
+    return_text: Optional[bool] = False
+) -> Any:
+    """
+    Check if the uploaded file is a resume, performing only the extraction and resume detection.
+    
+    Args:
+        file: The file to check
+        return_text: If True, returns the extracted text with the result
+        
+    Returns:
+        ResumeCheckResult: Information about resume detection
+    """
+    try:
+        # Extract text from the file
+        extracted_text = await extract_text_from_file(file)
+        
+        if not extracted_text or len(extracted_text.strip()) < 50:
+            return ResumeCheckResult(
+                is_resume=False,
+                confidence=0.1,
+                detected_sections=[],
+                reasoning="Insufficient text extracted from the file",
+                extracted_text=extracted_text if return_text else None
+            )
+            
+        # Check if the extracted text is a resume
+        detection_result = await is_resume_document(extracted_text)
+        
+        response = ResumeCheckResult(
+            is_resume=detection_result["is_resume"],
+            confidence=detection_result["confidence"],
+            detected_sections=detection_result["detected_sections"],
+            reasoning=detection_result["reasoning"],
+            extracted_text=extracted_text if return_text else None
+        )
+            
+        return response
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         ) 

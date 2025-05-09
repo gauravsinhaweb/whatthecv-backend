@@ -50,4 +50,11 @@ def get_db():
     try:
         yield db
     finally:
-        db.close() 
+        db.close()
+
+def get_engine():
+    """
+    Return the SQLAlchemy engine instance.
+    This function is used by the migration scripts.
+    """
+    return engine 

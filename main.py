@@ -4,29 +4,21 @@ from starlette.responses import JSONResponse
 import time
 
 from app.core.config import settings
-from app.api import auth, resume
+from app.api import auth, resume, doc
 from app.db.base import Base, engine
 
 # Import all models to ensure SQLAlchemy can create the tables
 from app.models.user import User
 from app.models.otp import OTP
-from app.models.resume import Resume, JobDescription, ResumeAnalysis
+from app.models.doc import Doc, doc_relationships
 from app.utils.errors import AuthError
-
-# Import and run migrations
-from app.db.migrations.make_resume_user_id_nullable import upgrade as make_user_id_nullable
 
 app = FastAPI(title=settings.PROJECT_NAME)
 
 @app.on_event("startup")
 async def startup_event():
+    # Create tables
     Base.metadata.create_all(bind=engine)
-    
-    # Run migrations
-    try:
-        make_user_id_nullable(engine)
-    except Exception as e:
-        print(f"Migration error: {e}")
 
 app.add_middleware(
     CORSMiddleware,
@@ -57,6 +49,7 @@ def read_root():
 
 app.include_router(auth.router, prefix=settings.API_V1_STR)
 app.include_router(resume.router, prefix=settings.API_V1_STR)
+app.include_router(doc.router, prefix=settings.API_V1_STR)
 
 if __name__ == "__main__":
     import uvicorn
