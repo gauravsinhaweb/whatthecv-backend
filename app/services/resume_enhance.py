@@ -97,9 +97,6 @@ async def enhance_resume(resume_content: Union[str, bytes]) -> Dict[str, Any]:
         personal_info = await enhance_personal_info(resume_text, extracted_data.get("personalInfo", {}))
         enhanced_resume["personalInfo"] = personal_info
         
-        # Add explicit warning to all prompts to not fabricate details
-        logger.info("Adding strict instructions to all enhancement prompts to preserve original data and not fabricate details")
-        
         # Process work experience with dedicated prompt
         work_experience = await enhance_work_experience(resume_text, extracted_data.get("workExperience", []))
         enhanced_resume["workExperience"] = work_experience
@@ -230,8 +227,8 @@ async def enhance_personal_info(resume_text: str, extracted_info: Dict[str, Any]
     prompt = f"""
     Extract and enhance the following personal information from this resume text for optimal ATS compatibility:
     
-    1. Full Name: Keep the exact original full name - DO NOT modify it
-    2. Position/Job Title: Keep the exact original job title/position - DO NOT modify it
+    1. Full Name (first and last name only, no job titles or credentials)
+    2. Position/Job Title (e.g., "Frontend Engineer", "Product Manager")
     3. Email Address
     4. Phone Number (in standard format)
     5. Location (city, state/country)
@@ -244,7 +241,6 @@ async def enhance_personal_info(resume_text: str, extracted_info: Dict[str, Any]
     Format the output as a JSON object with these exact keys: name, position, email, phone, location, summary.
     Ensure each field contains only the specific information requested with no additional text or labels.
     For any fields not found, use empty strings.
-    IMPORTANT: You MUST keep the exact original full name and position/job title - do not modify these at all.
     """
     
     try:
@@ -252,40 +248,35 @@ async def enhance_personal_info(resume_text: str, extracted_info: Dict[str, Any]
         gemini_response = await call_gemini_api(prompt)
         
         # Extract JSON from the response
-        ai_person = extract_json_from_text(gemini_response)
+        ai_personal_info = extract_json_from_text(gemini_response)
         
-        if ai_person and isinstance(ai_person, dict):
-            # Preserve original name and position
-            original_name = extracted_info.get('name', '')
-            original_position = extracted_info.get('position', '') or extracted_info.get('title', '')
-            
-            # Update all fields except name and position
-            for field in ["email", "phone", "location", "summary"]:
-                if field in ai_person and ai_person[field]:
-                    personal_info[field] = ai_person[field]
-            
-            # Ensure we keep original name and position
-            if original_name:
-                personal_info["name"] = original_name
-            elif "name" in ai_person and ai_person["name"]:
-                personal_info["name"] = ai_person["name"]
+        if ai_personal_info and isinstance(ai_personal_info, dict):
+            # Process and validate each field
+            # Name: Clean and separate from position if needed
+            if ai_personal_info.get("name"):
+                name = ai_personal_info["name"]
+                position = ai_personal_info.get("position", personal_info.get("position", personal_info.get("title", "")))
                 
-            if original_position:
-                personal_info["position"] = original_position
-            elif "position" in ai_person and ai_person["position"]:
-                personal_info["position"] = ai_person["position"]
+                # Use specialized function to separate name from position
+                clean_name, position = await extract_name_and_position(name, position)
+                personal_info["name"] = clean_name
+                personal_info["position"] = position
             
-            # Format phone number consistently
-            if "phone" in personal_info and personal_info["phone"]:
-                personal_info["phone"] = format_phone_number(personal_info["phone"])
+            # Email: Validate and use
+            if ai_personal_info.get("email") and "@" in ai_personal_info["email"]:
+                personal_info["email"] = ai_personal_info["email"]
+            
+            # Phone: Format consistently
+            if ai_personal_info.get("phone"):
+                personal_info["phone"] = format_phone_number(ai_personal_info["phone"])
             
             # Location: Clean and format
-            if ai_person.get("location"):
-                personal_info["location"] = ai_person["location"]
+            if ai_personal_info.get("location"):
+                personal_info["location"] = ai_personal_info["location"]
             
             # Summary: Enhance with AI insights
-            if ai_person.get("summary"):
-                personal_info["summary"] = ai_person["summary"]
+            if ai_personal_info.get("summary"):
+                personal_info["summary"] = ai_personal_info["summary"]
         
         # Ensure all required fields exist
         for field in ["name", "position", "email", "phone", "location", "summary"]:
@@ -367,8 +358,8 @@ async def enhance_work_experience(resume_text: str, extracted_jobs: List[Dict[st
             {job_context}
             
             Improve and extract these fields:
-            1. Position: Keep the exact original job title/position - DO NOT modify it
-            2. Company: Keep the exact original company name - DO NOT modify it
+            1. Position: Ensure the job title is clear, standardized, and optimized for ATS
+            2. Company: Format the company name properly
             3. Location: Provide city and state/country in standard format
             4. Start Date: Format as YYYY-MM
             5. End Date: Format as YYYY-MM or "Present" for current roles
@@ -381,7 +372,6 @@ async def enhance_work_experience(resume_text: str, extracted_jobs: List[Dict[st
             Format the output ONLY as a JSON object with these exact keys: position, company, location, startDate, endDate, current, description.
             For the description field, provide the content in HTML format using <ul> and <li> tags.
             Do not include any other text or explanations outside the JSON.
-            IMPORTANT: You MUST keep the exact original position and company name - do not modify these at all.
             """
             
             try:
@@ -395,12 +385,8 @@ async def enhance_work_experience(resume_text: str, extracted_jobs: List[Dict[st
                     # Start with original job data to preserve ID
                     enhanced_job = job.copy()
                     
-                    # Preserve original position and company
-                    original_position = job.get('position', '')
-                    original_company = job.get('company', '')
-                    
-                    # Update job with enhanced fields, except position and company
-                    for field in ["location", "startDate", "endDate", "description"]:
+                    # Update job with enhanced fields
+                    for field in ["position", "company", "location", "startDate", "endDate", "description"]:
                         if field in ai_job and ai_job[field]:
                             enhanced_job[field] = ai_job[field]
                     
@@ -723,20 +709,20 @@ async def enhance_projects(resume_text: str, extracted_projects: List[Dict[str, 
             {proj_context}
             
             Improve and extract these fields:
-            1. Name: Keep the exact original project name - DO NOT modify it
-            2. Description: Create a short paragraph that highlights:
+            1. Name: Clear and concise project name
+            2. Description: 2-4 bullet points that highlight:
                - The purpose of the project
-               - Technical details and your specific contributions
+               - Your specific contributions
+               - Technical challenges overcome
                - End results or impact
             3. Technologies: List the key technologies, languages, frameworks used (as a comma-separated string, not an array)
             4. Link: Project URL (GitHub, live site, etc.) if available. Use empty string if no link.
             
             Format the output ONLY as a JSON object with these exact keys: name, description, technologies, link.
-            For the description field, provide the content as a single paragraph without bullet points.
+            For the description field, provide the content in HTML format using <ul> and <li> tags.
             For the technologies field, provide a comma-separated string, not an array.
             For the link field, use an empty string if no link is available.
             Do not include any other text or explanations outside the JSON.
-            IMPORTANT: You MUST keep the exact original project name - do not modify it at all.
             """
             
             try:
@@ -750,17 +736,14 @@ async def enhance_projects(resume_text: str, extracted_projects: List[Dict[str, 
                     # Start with original project data to preserve ID
                     enhanced_proj = proj.copy()
                     
-                    # Preserve original name
-                    original_name = proj.get('name', '')
-                    
-                    # Update project with enhanced fields, except name
-                    for field in ["description", "technologies", "link"]:
+                    # Update project with enhanced fields
+                    for field in ["name", "description", "technologies", "link"]:
                         if field in ai_proj and ai_proj[field]:
                             enhanced_proj[field] = ai_proj[field]
                     
                     # Format description as HTML if it's not already
                     if "description" in enhanced_proj and enhanced_proj["description"] and not enhanced_proj["description"].startswith("<"):
-                        enhanced_proj["description"] = format_as_paragraph(enhanced_proj["description"])
+                        enhanced_proj["description"] = format_as_bullet_points(enhanced_proj["description"])
                     
                     # Ensure technologies is a string (convert list to string if needed)
                     if "technologies" in enhanced_proj:
@@ -959,34 +942,6 @@ def format_as_bullet_points(text: str) -> str:
     # Format as bullet points
     bullet_points = "\n".join([f"<li>{line}</li>" for line in lines])
     return f"<ul>{bullet_points}</ul>"
-
-def format_as_paragraph(text: str) -> str:
-    """
-    Format text as HTML paragraph if it isn't already
-    
-    Args:
-        text: The text to format
-        
-    Returns:
-        HTML paragraph
-    """
-    if not text:
-        return ""
-        
-    # If already HTML formatted, return as is
-    if text.strip().startswith("<"):
-        return text
-    
-    # Split by newlines or bullet markers to combine all points
-    lines = re.split(r"\n|•|\*|-", text)
-    lines = [line.strip() for line in lines if line.strip()]
-    
-    if not lines:
-        return ""
-    
-    # Join all points into a single paragraph
-    paragraph = " ".join(lines)
-    return f"<p>{paragraph}</p>"
 
 def format_phone_number(phone: str) -> str:
     """
