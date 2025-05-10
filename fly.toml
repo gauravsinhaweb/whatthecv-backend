@@ -8,7 +8,7 @@ primary_region = 'bom'  # Change this to your preferred region if needed
 [http_service]
   internal_port = 8000
   force_https = true
-  auto_stop_machines = 'always'  # Auto-stop machines to save costs when idle
+  auto_stop_machines = 'stop'  # Auto-stop machines to save costs when idle
   auto_start_machines = true     # Auto-start machines when traffic is detected
   min_machines_running = 0       # Allow Fly to scale down to zero when idle
   processes = ['app']
