@@ -1,22 +1,19 @@
-# fly.toml app configuration file generated for whatthecv-backend on 2025-05-11T01:53:46+05:30
-#
-# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
-#
-
+# fly.toml app configuration file
 app = 'whatthecv-backend'
-primary_region = 'bom'
+primary_region = 'bom'  # Change this to your preferred region if needed
 
 [build]
+  # You can configure any build-related options here if needed
 
 [http_service]
   internal_port = 8000
   force_https = true
-  auto_stop_machines = false
-  auto_start_machines = false
-  min_machines_running = 1
+  auto_stop_machines = 'always'  # Auto-stop machines to save costs when idle
+  auto_start_machines = true     # Auto-start machines when traffic is detected
+  min_machines_running = 0       # Allow Fly to scale down to zero when idle
   processes = ['app']
 
 [[vm]]
-  memory = '1gb'
-  cpu_kind = 'shared'
-  cpus = 1
+  memory = '512mb'              # Free-tier RAM limit (shared-cpu-1x is ~256MB-512MB)
+  cpu_kind = 'shared'           # Free-tier uses shared CPUs
+  cpus = 1                      # 1 shared CPU
