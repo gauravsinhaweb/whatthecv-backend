@@ -3,6 +3,9 @@ from sqlalchemy.orm import Session
 from typing import List, Optional, Any, Dict
 import logging
 import json
+import re
+from datetime import datetime
+from dateutil import parser as date_parser
 
 from app.db.base import get_db
 from app.models.user import User
@@ -18,9 +21,76 @@ from app.schemas.resume import (
     ResumeAnalysisResponse, SectionImprovement, ResumeCheckResult,
     EnhancedResumeData
 )
+from app.services.resume_enhance import enhance_resume, extract_resume_structure_fallback
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+def normalize_date(date_str: str) -> str:
+    """
+    Normalize date strings to a consistent format.
+    Handles various date formats and partial dates.
+    
+    Args:
+        date_str: Date string to normalize
+        
+    Returns:
+        Normalized date string in YYYY-MM format or empty string if invalid
+    """
+    if not date_str or date_str.lower() in ["present", "current", "now"]:
+        return date_str
+        
+    try:
+        # Handle common year-only formats
+        if re.match(r'^\d{4}$', date_str):
+            return f"{date_str}-01"
+            
+        # Handle month year formats (Jan 2023, January 2023, etc)
+        if re.match(r'^[a-zA-Z]{3,}\s+\d{4}$', date_str):
+            parsed_date = date_parser.parse(date_str, fuzzy=True)
+            return parsed_date.strftime("%Y-%m")
+            
+        # Parse with dateutil for more complex formats
+        parsed_date = date_parser.parse(date_str, fuzzy=True)
+        return parsed_date.strftime("%Y-%m")
+    except (ValueError, OverflowError):
+        # If parsing fails, return the original string
+        return date_str
+
+def clean_description(description: str) -> str:
+    """
+    Clean and normalize description text.
+    
+    Args:
+        description: Text to clean
+        
+    Returns:
+        Cleaned text
+    """
+    if not description:
+        return ""
+        
+    # Convert to string in case it's not
+    description = str(description)
+    
+    # Remove excessive whitespace
+    description = re.sub(r'\s+', ' ', description)
+    
+    # Ensure bullet points are consistent
+    description = re.sub(r'(?<!\n)•', '\n•', description)
+    description = re.sub(r'(?<!\n)-', '\n-', description)
+    
+    # Normalize bullet point style
+    description = re.sub(r'^\s*[*•◦■]\s*', '• ', description, flags=re.MULTILINE)
+    description = re.sub(r'^\s*-\s+', '• ', description, flags=re.MULTILINE)
+    
+    # Fix common OCR issues in text
+    description = re.sub(r'l\s+\. ', '1. ', description)
+    
+    # Consolidate multiple newlines
+    description = re.sub(r'\n{3,}', '\n\n', description)
+    
+    return description.strip()
 
 router = APIRouter(prefix="/resume", tags=["resume"])
 
@@ -301,18 +371,33 @@ async def enhance_resume_text(
 ) -> Any:
     """
     Enhance a resume by extracting structured information and optimizing content for ATS.
+    
+    Args:
+        resume_text: Raw resume text to enhance
+        current_user: Optional authenticated user
+        db: Database session
     """
     try:
         logger.info("Processing resume enhancement from text")
         
-        from app.services.resume_enhance import enhance_resume
+        # Clean the text by removing excessive whitespace and normalizing line breaks
+        resume_text = re.sub(r'\s+', ' ', resume_text)
+        resume_text = re.sub(r'\n\s*\n', '\n\n', resume_text)
+        
+        # Handle common OCR errors in dates and contact information
+        resume_text = re.sub(r'(?<!\d)l(?=\d)', '1', resume_text)  # Replace lone 'l' with '1' in numbers
+        resume_text = re.sub(r'(?<=\d)O|o(?=\d)', '0', resume_text)  # Replace 'O' or 'o' with '0' in numbers
+        
+        # Fix common email extraction issues
+        resume_text = re.sub(r'[\[\]{}()<>]', '', resume_text)  # Remove brackets in emails
+        
         enhanced_data = await enhance_resume(resume_text)
         
         # Verify the structure of returned data and provide defaults where missing
         validated_data = EnhancedResumeData(
             personalInfo={
                 "name": enhanced_data.get("personalInfo", {}).get("name", ""),
-                "title": enhanced_data.get("personalInfo", {}).get("title", ""),
+                "position": enhanced_data.get("personalInfo", {}).get("position", "") or enhanced_data.get("personalInfo", {}).get("title", ""),
                 "email": enhanced_data.get("personalInfo", {}).get("email", ""),
                 "phone": enhanced_data.get("personalInfo", {}).get("phone", ""),
                 "location": enhanced_data.get("personalInfo", {}).get("location", ""),
@@ -321,13 +406,13 @@ async def enhance_resume_text(
             workExperience=[
                 {
                     "id": exp.get("id", str(i+1)),
-                    "title": exp.get("title", ""),
+                    "position": exp.get("position", "") or exp.get("title", ""),
                     "company": exp.get("company", ""),
                     "location": exp.get("location", ""),
-                    "startDate": exp.get("startDate", ""),
-                    "endDate": exp.get("endDate", ""),
+                    "startDate": normalize_date(exp.get("startDate", "") or ""),
+                    "endDate": normalize_date(exp.get("endDate", "") or ""),
                     "current": exp.get("current", False),
-                    "description": exp.get("description", "")
+                    "description": clean_description(exp.get("description", ""))
                 }
                 for i, exp in enumerate(enhanced_data.get("workExperience", []))
             ],
@@ -337,9 +422,9 @@ async def enhance_resume_text(
                     "degree": edu.get("degree", ""),
                     "institution": edu.get("institution", ""),
                     "location": edu.get("location", ""),
-                    "startDate": edu.get("startDate", ""),
-                    "endDate": edu.get("endDate", ""),
-                    "description": edu.get("description", "")
+                    "startDate": normalize_date(edu.get("startDate", "") or ""),
+                    "endDate": normalize_date(edu.get("endDate", "") or ""),
+                    "description": clean_description(edu.get("description", ""))
                 }
                 for i, edu in enumerate(enhanced_data.get("education", []))
             ],
@@ -348,13 +433,12 @@ async def enhance_resume_text(
                 {
                     "id": proj.get("id", str(i+1)),
                     "name": proj.get("name", ""),
-                    "description": proj.get("description", ""),
+                    "description": clean_description(proj.get("description", "")),
                     "technologies": proj.get("technologies", ""),
                     "link": proj.get("link", "")
                 }
                 for i, proj in enumerate(enhanced_data.get("projects", []))
-            ],
-            extracted_text=resume_text
+            ]
         )
         
         # Log the structure of data being returned
@@ -364,6 +448,22 @@ async def enhance_resume_text(
         logger.info(f"Skills count: {len(validated_data.skills)}")
         logger.info(f"Projects count: {len(validated_data.projects)}")
         
+        # Save the enhanced resume to the database if the user is authenticated
+        if current_user:
+            try:
+                from app.services.enhanced_resume import create_enhanced_resume
+                await create_enhanced_resume(
+                    db=db,
+                    enhanced_data=validated_data,
+                    user_id=current_user.id,
+                    source_file_name="text_input",
+                    meta_data={"source_type": "text_input"}
+                )
+                logger.info(f"Saved enhanced resume to database for user {current_user.id}")
+            except Exception as db_error:
+                logger.error(f"Failed to save enhanced resume to database: {str(db_error)}")
+                # Don't fail the whole request if just the database save fails
+        
         return validated_data
     except Exception as e:
         logger.error(f"Resume enhancement failed: {str(e)}", exc_info=True)
@@ -371,7 +471,6 @@ async def enhance_resume_text(
         # Provide a minimal fallback structure rather than failing completely
         try:
             # Basic fallback extraction
-            from app.services.resume_enhance import extract_resume_structure_fallback
             fallback_data = await extract_resume_structure_fallback(resume_text)
             
             if fallback_data:
@@ -380,7 +479,7 @@ async def enhance_resume_text(
                 return EnhancedResumeData(
                     personalInfo={
                         "name": fallback_data.get("personalInfo", {}).get("name", ""),
-                        "title": fallback_data.get("personalInfo", {}).get("title", ""),
+                        "position": fallback_data.get("personalInfo", {}).get("position", "") or fallback_data.get("personalInfo", {}).get("title", ""),
                         "email": fallback_data.get("personalInfo", {}).get("email", ""),
                         "phone": fallback_data.get("personalInfo", {}).get("phone", ""),
                         "location": fallback_data.get("personalInfo", {}).get("location", ""),
@@ -389,13 +488,13 @@ async def enhance_resume_text(
                     workExperience=[
                         {
                             "id": str(i+1),
-                            "title": exp.get("title", ""),
+                            "position": exp.get("position", "") or exp.get("title", ""),
                             "company": exp.get("company", ""),
                             "location": exp.get("location", ""),
-                            "startDate": exp.get("startDate", ""),
-                            "endDate": exp.get("endDate", ""),
+                            "startDate": normalize_date(exp.get("startDate", "") or ""),
+                            "endDate": normalize_date(exp.get("endDate", "") or ""),
                             "current": exp.get("current", False),
-                            "description": exp.get("description", "")
+                            "description": clean_description(exp.get("description", ""))
                         }
                         for i, exp in enumerate(fallback_data.get("workExperience", []))
                     ],
@@ -405,9 +504,9 @@ async def enhance_resume_text(
                             "degree": edu.get("degree", ""),
                             "institution": edu.get("institution", ""),
                             "location": edu.get("location", ""),
-                            "startDate": edu.get("startDate", ""),
-                            "endDate": edu.get("endDate", ""),
-                            "description": edu.get("description", "")
+                            "startDate": normalize_date(edu.get("startDate", "") or ""),
+                            "endDate": normalize_date(edu.get("endDate", "") or ""),
+                            "description": clean_description(edu.get("description", ""))
                         }
                         for i, edu in enumerate(fallback_data.get("education", []))
                     ],
@@ -416,13 +515,12 @@ async def enhance_resume_text(
                         {
                             "id": str(i+1),
                             "name": proj.get("name", ""),
-                            "description": proj.get("description", ""),
+                            "description": clean_description(proj.get("description", "")),
                             "technologies": proj.get("technologies", ""),
                             "link": proj.get("link", "")
                         }
                         for i, proj in enumerate(fallback_data.get("projects", []))
-                    ],
-                    extracted_text=resume_text
+                    ]
                 )
         except Exception as fallback_error:
             logger.error(f"Fallback extraction also failed: {str(fallback_error)}")
@@ -711,61 +809,79 @@ async def enhance_resume_file(
     db: Session = Depends(get_db)
 ) -> Any:
     """
-    Enhance a resume by extracting structured information and optimizing content for ATS.
-    This endpoint accepts a file directly instead of extracted text.
+    Enhance a resume file by extracting structured information.
+    This endpoint handles binary files directly.
+    
+    Args:
+        file: The resume file to enhance
+        current_user: Optional authenticated user
+        db: Database session
     """
     try:
-        # First extract text from the file
-        extracted_text = await extract_text_from_file(file)
-        
         logger.info(f"Processing resume enhancement for file: {file.filename}")
         
-        if not extracted_text or len(extracted_text.strip()) < 50:
-            logger.warning(f"Insufficient text extracted from file: {file.filename}")
+        # Read the file content as binary data
+        file_content = await file.read()
+        
+        if not file_content:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Could not extract sufficient text from the resume file. The file may be corrupted, password-protected, or contain only images."
+                detail="Empty file provided"
             )
-            
-        # Optional: Save to database for authenticated users
-        if current_user:
-            try:
-                # Create document in the Doc table
-                from app.services.doc import create_document
-                from app.models.doc import DocType
-                from app.services.resume_parser import extract_personal_info
-                
-                # Extract personal info
-                personal_info = await extract_personal_info(extracted_text)
-                
-                # Create the text document
-                doc_data = {
-                    "user_id": current_user.id,
-                    "doc_type": DocType.RESUME.value,
-                    "file_name": file.filename or "Untitled Resume",
-                    "extracted_text": extracted_text,
-                    "metadata": {
-                        "is_resume": True,
-                        **personal_info
-                    }
-                }
-                
-                # Create text document
-                await create_document(db, doc_data)
-                logger.info(f"Resume document saved to database for user ID: {current_user.id}")
-            except Exception as db_error:
-                # Log error but continue with enhancement
-                logger.error(f"Failed to save document to database: {str(db_error)}")
         
-        # Now enhance the extracted text
-        from app.services.resume_enhance import enhance_resume
-        enhanced_data = await enhance_resume(extracted_text)
+        # Extract text from the file
+        try:
+            from app.services.file import extract_text_from_bytes
+            
+            # First try to extract text from the binary content
+            resume_text = await extract_text_from_bytes(file_content)
+            
+            # Clean and preprocess the text for better extraction accuracy
+            if resume_text and len(resume_text.strip()) >= 50:
+                # Text extraction worked, preprocess then enhance
+                logger.info(f"Successfully extracted {len(resume_text)} characters from {file.filename}")
+                
+                # Clean the text by removing excessive whitespace and normalizing line breaks
+                resume_text = re.sub(r'\s+', ' ', resume_text)
+                resume_text = re.sub(r'\n\s*\n', '\n\n', resume_text)
+                
+                # Handle common OCR errors in dates and contact information
+                resume_text = re.sub(r'(?<!\d)l(?=\d)', '1', resume_text)  # Replace lone 'l' with '1' in numbers
+                resume_text = re.sub(r'(?<=\d)O|o(?=\d)', '0', resume_text)  # Replace 'O' or 'o' with '0' in numbers
+                
+                # Fix common email extraction issues
+                resume_text = re.sub(r'[\[\]{}()<>]', '', resume_text)  # Remove brackets in emails
+                
+                enhanced_data = await enhance_resume(resume_text)
+            else:
+                # If text extraction failed, try with binary content
+                logger.warning(f"Text extraction gave insufficient results for {file.filename}, trying alternative extraction")
+                
+                # Attempt to extract text using an alternate method (e.g. OCR if available)
+                from app.services.file import extract_text_with_ocr
+                try:
+                    ocr_text = await extract_text_with_ocr(file_content)
+                    if ocr_text and len(ocr_text.strip()) >= 50:
+                        logger.info(f"OCR extraction successful with {len(ocr_text)} characters")
+                        enhanced_data = await enhance_resume(ocr_text)
+                    else:
+                        # Fall back to direct binary processing
+                        enhanced_data = await enhance_resume(file_content)
+                except ImportError:
+                    # OCR functionality not available, use direct binary processing
+                    logger.warning("OCR functionality not available, using direct binary processing")
+                    enhanced_data = await enhance_resume(file_content)
+                
+        except Exception as extract_error:
+            logger.error(f"Text extraction failed, trying to enhance binary content directly: {str(extract_error)}")
+            # If text extraction fails, try to enhance the binary content directly
+            enhanced_data = await enhance_resume(file_content)
         
         # Verify the structure of returned data and provide defaults where missing
         validated_data = EnhancedResumeData(
             personalInfo={
                 "name": enhanced_data.get("personalInfo", {}).get("name", ""),
-                "title": enhanced_data.get("personalInfo", {}).get("title", ""),
+                "position": enhanced_data.get("personalInfo", {}).get("position", "") or enhanced_data.get("personalInfo", {}).get("title", ""),
                 "email": enhanced_data.get("personalInfo", {}).get("email", ""),
                 "phone": enhanced_data.get("personalInfo", {}).get("phone", ""),
                 "location": enhanced_data.get("personalInfo", {}).get("location", ""),
@@ -774,13 +890,13 @@ async def enhance_resume_file(
             workExperience=[
                 {
                     "id": exp.get("id", str(i+1)),
-                    "title": exp.get("title", ""),
+                    "position": exp.get("position", "") or exp.get("title", ""),
                     "company": exp.get("company", ""),
                     "location": exp.get("location", ""),
-                    "startDate": exp.get("startDate", ""),
-                    "endDate": exp.get("endDate", ""),
+                    "startDate": normalize_date(exp.get("startDate", "") or ""),
+                    "endDate": normalize_date(exp.get("endDate", "") or ""),
                     "current": exp.get("current", False),
-                    "description": exp.get("description", "")
+                    "description": clean_description(exp.get("description", ""))
                 }
                 for i, exp in enumerate(enhanced_data.get("workExperience", []))
             ],
@@ -790,9 +906,9 @@ async def enhance_resume_file(
                     "degree": edu.get("degree", ""),
                     "institution": edu.get("institution", ""),
                     "location": edu.get("location", ""),
-                    "startDate": edu.get("startDate", ""),
-                    "endDate": edu.get("endDate", ""),
-                    "description": edu.get("description", "")
+                    "startDate": normalize_date(edu.get("startDate", "") or ""),
+                    "endDate": normalize_date(edu.get("endDate", "") or ""),
+                    "description": clean_description(edu.get("description", ""))
                 }
                 for i, edu in enumerate(enhanced_data.get("education", []))
             ],
@@ -801,91 +917,42 @@ async def enhance_resume_file(
                 {
                     "id": proj.get("id", str(i+1)),
                     "name": proj.get("name", ""),
-                    "description": proj.get("description", ""),
+                    "description": clean_description(proj.get("description", "")),
                     "technologies": proj.get("technologies", ""),
                     "link": proj.get("link", "")
                 }
                 for i, proj in enumerate(enhanced_data.get("projects", []))
-            ],
-            extracted_text=extracted_text
+            ]
         )
         
+        # Save the enhanced resume to the database if the user is authenticated
+        if current_user:
+            try:
+                from app.services.enhanced_resume import create_enhanced_resume
+                await create_enhanced_resume(
+                    db=db,
+                    enhanced_data=validated_data,
+                    user_id=current_user.id,
+                    source_file_name=file.filename,
+                    meta_data={"source_type": "file_upload"}
+                )
+                logger.info(f"Saved enhanced resume to database for user {current_user.id}")
+            except Exception as db_error:
+                logger.error(f"Failed to save enhanced resume to database: {str(db_error)}")
+                # Don't fail the whole request if just the database save fails
+        
         # Log the structure of data being returned
-        logger.info(f"Enhanced resume data sections: {list(validated_data.dict().keys())}")
-        logger.info(f"Work experience count: {len(validated_data.workExperience)}")
-        logger.info(f"Education count: {len(validated_data.education)}")
-        logger.info(f"Skills count: {len(validated_data.skills)}")
-        logger.info(f"Projects count: {len(validated_data.projects)}")
+        logger.info(f"Enhanced resume data for file {file.filename} with {len(validated_data.workExperience)} work experiences, "
+                   f"{len(validated_data.education)} education entries, "
+                   f"{len(validated_data.skills)} skills")
         
         return validated_data
-    except Exception as e:
-        logger.error(f"Resume enhancement failed: {str(e)}", exc_info=True)
         
-        # Provide a minimal fallback structure rather than failing completely
-        try:
-            # Basic fallback extraction
-            from app.services.resume_enhance import extract_resume_structure_fallback
-            fallback_data = await extract_resume_structure_fallback(extracted_text if 'extracted_text' in locals() else "")
-            
-            if fallback_data:
-                logger.info("Using fallback data structure for failed enhancement")
-                # Convert the fallback data to the proper schema
-                return EnhancedResumeData(
-                    personalInfo={
-                        "name": fallback_data.get("personalInfo", {}).get("name", ""),
-                        "title": fallback_data.get("personalInfo", {}).get("title", ""),
-                        "email": fallback_data.get("personalInfo", {}).get("email", ""),
-                        "phone": fallback_data.get("personalInfo", {}).get("phone", ""),
-                        "location": fallback_data.get("personalInfo", {}).get("location", ""),
-                        "summary": fallback_data.get("personalInfo", {}).get("summary", "")
-                    },
-                    workExperience=[
-                        {
-                            "id": str(i+1),
-                            "title": exp.get("title", ""),
-                            "company": exp.get("company", ""),
-                            "location": exp.get("location", ""),
-                            "startDate": exp.get("startDate", ""),
-                            "endDate": exp.get("endDate", ""),
-                            "current": exp.get("current", False),
-                            "description": exp.get("description", "")
-                        }
-                        for i, exp in enumerate(fallback_data.get("workExperience", []))
-                    ],
-                    education=[
-                        {
-                            "id": str(i+1),
-                            "degree": edu.get("degree", ""),
-                            "institution": edu.get("institution", ""),
-                            "location": edu.get("location", ""),
-                            "startDate": edu.get("startDate", ""),
-                            "endDate": edu.get("endDate", ""),
-                            "description": edu.get("description", "")
-                        }
-                        for i, edu in enumerate(fallback_data.get("education", []))
-                    ],
-                    skills=fallback_data.get("skills", []),
-                    projects=[
-                        {
-                            "id": str(i+1),
-                            "name": proj.get("name", ""),
-                            "description": proj.get("description", ""),
-                            "technologies": proj.get("technologies", ""),
-                            "link": proj.get("link", "")
-                        }
-                        for i, proj in enumerate(fallback_data.get("projects", []))
-                    ],
-                    extracted_text=extracted_text if 'extracted_text' in locals() else ""
-                )
-        except Exception as fallback_error:
-            logger.error(f"Fallback extraction also failed: {str(fallback_error)}")
-            
-        # If both main and fallback approach fail, return detailed error
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Resume file enhancement failed: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={
-                "message": f"Failed to enhance resume: {str(e)}",
-                "error_type": type(e).__name__,
-                "fallback_failed": True
-            }
+            detail=f"Failed to enhance resume: {str(e)}"
         ) 

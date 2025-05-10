@@ -19,16 +19,16 @@ class SectionAnalysis(BaseModel):
 
 class PersonalInfo(BaseModel):
     name: str = Field("", description="Full name")
-    title: str = Field("", description="Job title")
+    position: str = Field("", description="Job position e.g. 'Frontend Engineer', 'Backend Engineer'")
     email: str = Field("", description="Email address")
     phone: str = Field("", description="Phone number")
-    location: str = Field("", description="Location (country)")
+    location: str = Field("", description="Location (city, country)")
     summary: str = Field("", description="Professional summary")
     profilePicture: Optional[str] = Field(None, description="Profile picture URL")
 
 class WorkExperience(BaseModel):
     id: str = Field(..., description="Unique identifier")
-    title: str = Field("", description="Job title")
+    position: str = Field("", description="Job title/position")
     company: str = Field("", description="Company name")
     location: str = Field("", description="Location (country)")
     startDate: str = Field("", description="Start date")
@@ -119,5 +119,4 @@ class EnhancedResumeData(BaseModel):
     workExperience: List[WorkExperience] = Field(default_factory=list, description="Work experience entries")
     education: List[Education] = Field(default_factory=list, description="Education entries")
     skills: List[str] = Field(default_factory=list, description="Skills")
-    projects: List[Project] = Field(default_factory=list, description="Projects")
-    extracted_text: Optional[str] = Field(None, description="Original extracted text") 
+    projects: List[Project] = Field(default_factory=list, description="Projects") 
