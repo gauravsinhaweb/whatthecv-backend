@@ -1,0 +1,41 @@
+name: Backend API Health Check
+
+on:
+  schedule:
+    # Run every 10 minutes
+    - cron: '*/10 * * * *'
+  # Allow manual triggering for testing
+  workflow_dispatch:
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check backend API health
+        id: health_check
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://whatthecv-backend.fly.dev/)
+          echo "status=$STATUS" >> $GITHUB_OUTPUT
+          if [ "$STATUS" != "200" ]; then
+            echo "API returned non-200 status code: $STATUS"
+            exit 1
+          else
+            echo "API is healthy, returned status code: $STATUS"
+          fi
+      
+      - name: Log success
+        if: steps.health_check.outputs.status == '200'
+        run: |
+          echo "Health check successful at $(date)"
+      
+      # Optional: Notify on failure
+      # Uncomment and configure this if you want to be notified of failures
+      # - name: Send notification on failure
+      #   if: failure()
+      #   uses: rtCamp/action-slack-notify@v2
+      #   env:
+      #     SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+      #     SLACK_CHANNEL: alerts
+      #     SLACK_COLOR: danger
+      #     SLACK_TITLE: API Health Check Failed
+      #     SLACK_MESSAGE: 'The WhatTheCV backend API health check failed! Status code: ${{ steps.health_check.outputs.status }}' 
