@@ -6,7 +6,7 @@ This directory contains GitHub Actions workflows for the WhatTheCV backend appli
 
 ### 1. Keep Backend API Alive (`keep-alive.yml`)
 
-This workflow runs every 10 minutes to ping the backend API, helping to prevent the Fly.io instance from idling out due to inactivity.
+This workflow runs every 2 hours to ping the backend API, helping to prevent the Fly.io instance from idling out due to inactivity.
 
 **Functionality:**
 - Makes a simple HTTP request to the API root endpoint
@@ -18,7 +18,7 @@ This workflow runs every 10 minutes to ping the backend API, helping to prevent 
 A more advanced workflow that checks if the API is healthy by verifying the response status code.
 
 **Functionality:**
-- Runs every 10 minutes
+- Runs every 2 hours
 - Checks if the API returns a 200 status code
 - Fails the workflow if a non-200 status is received
 - Includes configurable notification options (commented out by default)
