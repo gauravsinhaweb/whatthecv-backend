@@ -225,22 +225,21 @@ async def enhance_personal_info(resume_text: str, extracted_info: Dict[str, Any]
     
     # Create a focused prompt for personal info
     prompt = f"""
-    Extract and enhance the following personal information from this resume text for optimal ATS compatibility:
+    Extract and format the following personal information from this resume text for direct use in a resume:
     
-    1. Full Name (first and last name only, no job titles or credentials)
-    2. Position/Job Title (e.g., "Frontend Engineer", "Product Manager")
-    3. Email Address
-    4. Phone Number (in standard format)
-    5. Location (city, state/country)
-    6. Professional Summary (concise paragraph highlighting key qualifications)
+    1. Full Name: Extract first and last name only, without titles or credentials
+    2. Position/Job Title: The primary professional role (e.g., "Frontend Engineer")
+    3. Email Address: In standard format
+    4. Phone Number: In standard format
+    5. Location: City and state/country only
+    6. Professional Summary: A single concise paragraph (2-3 sentences, under 75 words) highlighting core qualifications
     
     Resume Text:
-    {resume_text[:2000]}  # Use first 2000 chars as personal info is usually at the top
+    {resume_text[:2000]}
     
-    Return only clean, formatted data values without labels or explanations.
-    Format the output as a JSON object with these exact keys: name, position, email, phone, location, summary.
-    Ensure each field contains only the specific information requested with no additional text or labels.
-    For any fields not found, use empty strings.
+    Format the output as a clean JSON object with these exact keys: name, position, email, phone, location, summary.
+    Provide ONLY the extracted information without commentary, suggestions, or labels.
+    Use empty strings for any fields not found in the text.
     """
     
     try:
@@ -353,25 +352,25 @@ async def enhance_work_experience(resume_text: str, extracted_jobs: List[Dict[st
             
             # Create a focused prompt specifically for enhancing this job
             prompt = f"""
-            Enhance the following work experience entry for optimal ATS compatibility:
+            Format this work experience for a professional resume:
             
             {job_context}
             
-            Improve and extract these fields:
-            1. Position: Ensure the job title is clear, standardized, and optimized for ATS
-            2. Company: Format the company name properly
-            3. Location: Provide city and state/country in standard format
-            4. Start Date: Format as YYYY-MM
-            5. End Date: Format as YYYY-MM or "Present" for current roles
-            6. Description: Transform into 3-5 bullet points that:
-               - Start with strong action verbs
-               - Include measurable achievements with metrics when possible
-               - Focus on relevant responsibilities and accomplishments
-               - Are optimized for ATS keyword matching
+            Output these fields in this exact format:
+            1. Position: Standard job title format
+            2. Company: Official company name
+            3. Location: "City, State/Country" format
+            4. Start Date: Month Year format (e.g., 'Jan 2020')
+            5. End Date: Month Year format (e.g., 'Jan 2022') or "Present"
+            6. Description: 3-4 bullet points maximum that:
+               - Begin with strong action verbs
+               - Include specific metrics where relevant
+               - Focus on achievements and responsibilities
+               - Are concise (under 15 words each)
             
-            Format the output ONLY as a JSON object with these exact keys: position, company, location, startDate, endDate, current, description.
-            For the description field, provide the content in HTML format using <ul> and <li> tags.
-            Do not include any other text or explanations outside the JSON.
+            Format the output as a clean JSON object with these exact keys: position, company, location, startDate, endDate, current, description.
+            For the description field, provide HTML format using <ul> and <li> tags.
+            Include NO explanatory text, suggestions, or commentary.
             """
             
             try:
@@ -391,8 +390,10 @@ async def enhance_work_experience(resume_text: str, extracted_jobs: List[Dict[st
                             enhanced_job[field] = ai_job[field]
                     
                     # Set the "current" flag based on the end date
-                    if "endDate" in ai_job:
+                    if "endDate" in ai_job and ai_job["endDate"]:
                         enhanced_job["current"] = "present" in ai_job["endDate"].lower() or "current" in ai_job["endDate"].lower()
+                    else:
+                        enhanced_job["current"] = False
                 
                     # Ensure all required fields exist and are properly formatted
                     if "description" in enhanced_job and enhanced_job["description"] and not enhanced_job["description"].startswith("<ul>"):
@@ -402,6 +403,11 @@ async def enhance_work_experience(resume_text: str, extracted_jobs: List[Dict[st
                     # Ensure ID field exists
                     if "id" not in enhanced_job:
                         enhanced_job["id"] = f"work-{i+1}"
+                    
+                    # Ensure all required fields have string values (not None)
+                    for field in ["position", "company", "location", "startDate", "endDate", "description"]:
+                        if field not in enhanced_job or enhanced_job[field] is None:
+                            enhanced_job[field] = ""
                     
                     # Add to enhanced jobs list
                     enhanced_jobs.append(enhanced_job)
@@ -484,21 +490,20 @@ async def enhance_education(resume_text: str, extracted_education: List[Dict[str
             
             # Create a focused prompt specifically for enhancing this education entry
             prompt = f"""
-            Enhance the following education entry for optimal ATS compatibility:
+            Format this education entry for a professional resume:
             
             {edu_context}
             
-            Improve and extract these fields:
-            1. Degree: Use standard degree terminology (e.g., "Bachelor of Science in Computer Science")
-            2. Institution: Full and proper name of the institution
-            3. Location: City and state/country
-            4. Start Date: Format as YYYY-MM
-            5. End Date: Format as YYYY-MM or "Expected YYYY-MM" for future graduation
-            6. Description: Any relevant details such as GPA, honors, relevant coursework, etc.
+            Output these fields in this exact format:
+            1. Degree: Standard format (e.g., "Bachelor of Science in Computer Science")
+            2. Institution: Full institution name
+            3. Location: "City, State/Country" format
+            4. Start Date: Month Year format (e.g., 'Jan 2020')
+            5. End Date: Month Year format (e.g., 'Jun 2024') or "Expected Month Year"
             
-            Format the output ONLY as a JSON object with these exact keys: degree, institution, location, startDate, endDate, description.
-            For the description field, provide the content in HTML format using <p> tags.
-            Do not include any other text or explanations outside the JSON.
+            Format the output as a clean JSON object with these exact keys: degree, institution, location, startDate, endDate, description.
+            The description field must be an empty string.
+            Include NO explanatory text, suggestions, or commentary.
             """
             
             try:
@@ -513,17 +518,21 @@ async def enhance_education(resume_text: str, extracted_education: List[Dict[str
                     enhanced_edu = edu.copy()
                     
                     # Update education with enhanced fields
-                    for field in ["degree", "institution", "location", "startDate", "endDate", "description"]:
+                    for field in ["degree", "institution", "location", "startDate", "endDate"]:
                         if field in ai_edu and ai_edu[field]:
                             enhanced_edu[field] = ai_edu[field]
                     
-                    # Format description as HTML if it's not already
-                    if "description" in enhanced_edu and enhanced_edu["description"] and not enhanced_edu["description"].startswith("<"):
-                        enhanced_edu["description"] = f"<p>{enhanced_edu['description']}</p>"
+                    # Set description to empty
+                    enhanced_edu["description"] = ""
                     
                     # Ensure ID field exists
                     if "id" not in enhanced_edu:
                         enhanced_edu["id"] = f"edu-{i+1}"
+                    
+                    # Ensure all required fields have string values (not None)
+                    for field in ["degree", "institution", "location", "startDate", "endDate", "description"]:
+                        if field not in enhanced_edu or enhanced_edu[field] is None:
+                            enhanced_edu[field] = ""
                     
                     # Add to enhanced education list
                     enhanced_education.append(enhanced_edu)
@@ -562,9 +571,7 @@ async def enhance_skills(resume_text: str, extracted_skills: List[str]) -> List[
     if not extracted_skills:
         # Extract skills section from resume
         skills_section_prompt = f"""
-        Extract a comprehensive list of professional skills from this resume.
-        Include technical skills, soft skills, and any relevant competencies.
-        For technical skills, include programming languages, frameworks, tools, and technologies.
+        Extract a concise list of professional skills from this resume text.
         
         Resume Text:
         {resume_text}
@@ -586,9 +593,9 @@ async def enhance_skills(resume_text: str, extracted_skills: List[str]) -> List[
         except Exception as e:
             logger.error(f"Error extracting skills section: {str(e)}", exc_info=True)
     
-    # Enhanced skills prompt (whether we found some already or not)
+    # Create a focused prompt for skills
     prompt = f"""
-    Based on this resume, extract and enhance a comprehensive list of professional skills.
+    Extract a concise list of professional skills from this resume text.
     
     Resume Text:
     {resume_text}
@@ -708,21 +715,19 @@ async def enhance_projects(resume_text: str, extracted_projects: List[Dict[str, 
             
             {proj_context}
             
-            Improve and extract these fields:
-            1. Name: Clear and concise project name
-            2. Description: 2-4 bullet points that highlight:
-               - The purpose of the project
-               - Your specific contributions
-               - Technical challenges overcome
-               - End results or impact
-            3. Technologies: List the key technologies, languages, frameworks used (as a comma-separated string, not an array)
-            4. Link: Project URL (GitHub, live site, etc.) if available. Use empty string if no link.
+            Output these fields in this exact format:
+            1. Name: Keep the exact original project name unchanged
+            2. Description: A brief statement (15-25 words) that:
+               - Clearly states what the project is and your key contribution
+               - Uses precise, impactful language with no filler words
+               - Focuses on technical impact or measurable outcomes
+               - Avoids unnecessary details or explanations
+            3. Technologies: Comma-separated list of primary technologies used
+            4. Link: Project URL or empty string if none
             
-            Format the output ONLY as a JSON object with these exact keys: name, description, technologies, link.
-            For the description field, provide the content in HTML format using <ul> and <li> tags.
-            For the technologies field, provide a comma-separated string, not an array.
-            For the link field, use an empty string if no link is available.
-            Do not include any other text or explanations outside the JSON.
+            Format the output as a clean JSON object with these exact keys: name, description, technologies, link.
+            The description must be a single concise sentence without bullet points.
+            Include NO explanatory text, suggestions, or commentary.
             """
             
             try:
@@ -741,9 +746,10 @@ async def enhance_projects(resume_text: str, extracted_projects: List[Dict[str, 
                         if field in ai_proj and ai_proj[field]:
                             enhanced_proj[field] = ai_proj[field]
                     
-                    # Format description as HTML if it's not already
+                    # For description, no need to format as bullet points since we're using paragraphs
+                    # Just wrap in <p> tags if it's not already formatted with HTML
                     if "description" in enhanced_proj and enhanced_proj["description"] and not enhanced_proj["description"].startswith("<"):
-                        enhanced_proj["description"] = format_as_bullet_points(enhanced_proj["description"])
+                        enhanced_proj["description"] = f"<p>{enhanced_proj['description']}</p>"
                     
                     # Ensure technologies is a string (convert list to string if needed)
                     if "technologies" in enhanced_proj:
@@ -761,6 +767,11 @@ async def enhance_projects(resume_text: str, extracted_projects: List[Dict[str, 
                     # Ensure ID field exists
                     if "id" not in enhanced_proj:
                         enhanced_proj["id"] = f"proj-{i+1}"
+                    
+                    # Ensure all required fields have string values (not None)
+                    for field in ["name", "description", "technologies", "link"]:
+                        if field not in enhanced_proj or enhanced_proj[field] is None:
+                            enhanced_proj[field] = ""
                     
                     # Add to enhanced projects list
                     enhanced_projects.append(enhanced_proj)
@@ -917,10 +928,10 @@ def extract_json_from_text(text: str) -> Any:
 
 def format_as_bullet_points(text: str) -> str:
     """
-    Format text as HTML bullet points if it isn't already
+    Format plain text into HTML bullet points
     
     Args:
-        text: The text to format
+        text: Plain text to format
         
     Returns:
         HTML bullet point list
@@ -939,8 +950,20 @@ def format_as_bullet_points(text: str) -> str:
     if not lines:
         return ""
     
+    # Limit to 5 bullet points maximum to prevent content overflow
+    if len(lines) > 5:
+        lines = lines[:5]
+    
+    # Truncate very long bullet points (more than 150 chars) to prevent overflow
+    truncated_lines = []
+    for line in lines:
+        if len(line) > 150:
+            truncated_lines.append(line[:147] + "...")
+        else:
+            truncated_lines.append(line)
+    
     # Format as bullet points
-    bullet_points = "\n".join([f"<li>{line}</li>" for line in lines])
+    bullet_points = "\n".join([f"<li>{line}</li>" for line in truncated_lines])
     return f"<ul>{bullet_points}</ul>"
 
 def format_phone_number(phone: str) -> str:
@@ -1041,9 +1064,12 @@ async def extract_resume_structure_fallback(resume_text: str) -> Dict[str, Any]:
                 edu["id"] = f"edu-{i+1}"
             
             # Ensure all required fields exist
-            for field in ["degree", "institution", "location", "startDate", "endDate", "description"]:
+            for field in ["degree", "institution", "location", "startDate", "endDate"]:
                 if field not in edu or not edu[field]:
                     edu[field] = ""
+            
+            # Set description to empty
+            edu["description"] = ""
         
         # Process skills (ensure it's a list of strings)
         skills = extracted_structure.get("skills", [])
@@ -1056,9 +1082,15 @@ async def extract_resume_structure_fallback(resume_text: str) -> Dict[str, Any]:
                 project["id"] = f"proj-{i+1}"
             
             # Ensure all required fields exist
-            for field in ["name", "description", "technologies", "link"]:
+            for field in ["name", "technologies", "link"]:
                 if field not in project or not project[field]:
                     project[field] = ""
+            
+            # For description, make sure it's a paragraph format
+            if "description" not in project or not project["description"]:
+                project["description"] = ""
+            elif not project["description"].startswith("<p>"):
+                project["description"] = f"<p>{project['description']}</p>"
         
         # Return the structured data
         return {
