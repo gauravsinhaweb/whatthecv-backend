@@ -1,6 +1,7 @@
 # FastAPI and ASGI server
 fastapi==0.115.12
 uvicorn==0.34.2
+itsdangerous==2.1.2  # Required by Starlette for SessionMiddleware
 
 # Pydantic and settings management (Pydantic v2 compatible)
 pydantic==2.11.4

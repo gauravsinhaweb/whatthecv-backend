@@ -6,87 +6,142 @@ import json
 # Configure logging
 logger = logging.getLogger(__name__)
 
-async def extract_personal_info(resume_text: str) -> Dict[str, Any]:
+def check_resume_heuristics(text: str) -> Dict[str, Any]:
     """
-    Extract personal information from resume text including name, email, phone, address, and profile summary
+    Quickly check if text is likely a resume using heuristics
+    """
+    # Common resume section keywords
+    resume_sections = [
+        "experience", "education", "skills", "employment", "work history",
+        "professional experience", "qualification", "certification", "achievement",
+        "objective", "summary", "profile", "project", "language", "reference",
+        "volunteer", "training", "award", "publication"
+    ]
     
-    Args:
-        resume_text: The full text of the resume
+    # Convert to lowercase for case-insensitive matching
+    lower_text = text.lower()
+    
+    # Count matches
+    matched_sections = [section for section in resume_sections if section in lower_text]
+    match_count = len(matched_sections)
+    
+    # Calculate confidence
+    # 0-2 matches: Low confidence
+    # 3-4 matches: Medium confidence
+    # 5+ matches: High confidence
+    if match_count >= 5:
+        confidence = 0.95
+    elif match_count >= 3:
+        confidence = 0.75
+    elif match_count >= 1:
+        confidence = 0.5
+    else:
+        confidence = 0.25
         
-    Returns:
-        Dictionary containing extracted personal information
+    return {
+        "is_resume": confidence >= 0.5,
+        "confidence": confidence,
+        "detected_sections": matched_sections,
+        "reasoning": f"Found {match_count} common resume sections"
+    }
+
+async def extract_personal_info(text: str) -> Dict[str, Any]:
     """
+    Extract personal information from a resume text
+    Returns name, email, phone, address, links
+    """
+    if not text:
+        return {
+            "name": None,
+            "email": None,
+            "phone": None,
+            "address": None,
+            "links": []
+        }
+    
+    # Default results
     result = {
         "name": None,
         "email": None,
         "phone": None,
         "address": None,
-        "profile_summary": None
+        "links": []
     }
     
-    # Extract email addresses using regex
-    email_pattern = r'[\w\.-]+@[\w\.-]+\.\w+'
-    emails = re.findall(email_pattern, resume_text)
-    if emails:
-        result["email"] = emails[0]  # Take the first email found
+    # Split into lines for line-by-line analysis
+    lines = text.split('\n')
     
-    # Extract phone numbers using regex
-    # This pattern covers common formats: (123) 456-7890, 123-456-7890, 123.456.7890, etc.
-    phone_pattern = r'(?:\+\d{1,2}\s)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}'
-    phones = re.findall(phone_pattern, resume_text)
-    if phones:
-        result["phone"] = phones[0]  # Take the first phone number found
+    # Look for email address
+    email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+    email_match = re.search(email_pattern, text)
+    if email_match:
+        result["email"] = email_match.group(0)
     
-    # Extract name - assume it's at the beginning of the document
-    # This is a simplified approach - in production, you might want to use NER models
-    lines = resume_text.strip().split('\n')
-    for i in range(min(5, len(lines))):  # Check first 5 lines
+    # Look for phone number
+    phone_pattern = r'(?:\+\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}'
+    phone_match = re.search(phone_pattern, text)
+    if phone_match:
+        result["phone"] = phone_match.group(0)
+        
+    # Look for LinkedIn or other profile links
+    link_pattern = r'(?:linkedin\.com|github\.com|twitter\.com|instagram\.com|facebook\.com)/\S+'
+    link_matches = re.findall(link_pattern, text)
+    result["links"] = link_matches
+    
+    # Look for name (typically in the first 10 lines, looking for capitalized words)
+    name_found = False
+    for i in range(min(10, len(lines))):
         line = lines[i].strip()
-        if line and len(line) < 40 and not re.search(email_pattern, line) and not re.search(phone_pattern, line):
-            # A short line at the beginning that's not email/phone is likely the name
-            result["name"] = line
-            break
+        # Skip empty lines and lines with common header text
+        if not line or any(x in line.lower() for x in ['resume', 'cv', 'curriculum', 'vitae']):
+            continue
+            
+        # Look for a line with 1-3 words, all capitalized
+        words = line.split()
+        if 1 <= len(words) <= 3:
+            capitalized_words = [w for w in words if w[0].isupper()]
+            if len(capitalized_words) == len(words):
+                result["name"] = line
+                name_found = True
+                break
     
-    # Extract address - look for lines with common address patterns
-    address_indicators = ['street', 'avenue', 'ave', 'st', 'road', 'rd', 'lane', 'drive', 'dr', 
-                         'circle', 'blvd', 'boulevard', 'apt', 'apartment', 'suite']
-    address_candidates = []
+    # If we didn't find a name with the above method, try another approach
+    if not name_found and len(lines) > 0:
+        # Take the first non-empty line that doesn't contain email or phone
+        for i in range(min(5, len(lines))):
+            if (lines[i].strip() and 
+                (result["email"] is None or result["email"] not in lines[i]) and
+                (result["phone"] is None or result["phone"] not in lines[i])):
+                result["name"] = lines[i].strip()
+                break
     
-    for i, line in enumerate(lines):
-        line_lower = line.lower()
-        # Check if line contains address indicators or zip code pattern
-        if (any(indicator in line_lower for indicator in address_indicators) or 
-            re.search(r'\b\d{5}(?:-\d{4})?\b', line)):  # US zip code pattern
-            address_candidates.append(line)
-    
-    if address_candidates:
-        # If multiple candidates, join up to 2 consecutive lines
-        if len(address_candidates) > 1 and address_candidates[0].strip() and address_candidates[1].strip():
-            result["address"] = address_candidates[0] + ", " + address_candidates[1]
-        else:
-            result["address"] = address_candidates[0]
-    
-    # Extract profile summary - look for sections with keywords
-    profile_keywords = ['profile', 'summary', 'objective', 'about me', 'professional summary']
+    # Extract potential profile/summary section
     profile_section = None
     
-    # First, try to find a dedicated profile section
+    # Look for dedicated profile/summary section
+    summary_patterns = ['summary', 'profile', 'objective', 'about me', 'professional summary']
     for i, line in enumerate(lines):
-        if any(keyword in line.lower() for keyword in profile_keywords):
-            # Found a potential profile section heading
+        if any(pattern in line.lower() for pattern in summary_patterns):
+            # Found a section header, extract the section content (next few lines)
             start = i + 1
             end = start
-            while end < len(lines) and len(lines[end].strip()) > 0 and end < start + 10:
+            while end < len(lines) and end < start + 10:
+                if any(pattern in lines[end].lower() for pattern in ['experience', 'education', 'skills']):
+                    break  # Stop at next section header
                 end += 1
             if end > start:
-                profile_section = ' '.join(lines[start:end])
+                profile_section = '\n'.join(lines[start:end]).strip()
                 break
     
     # If no dedicated section found, take the first paragraph that's not the name/contact info
     if not profile_section:
         for i in range(min(10, len(lines))):
-            if lines[i].strip() and all(info not in lines[i].lower() for info in 
-                                      [result["email"], result["phone"], result["name"]]):
+            email_str = result["email"] if result["email"] else ""
+            phone_str = result["phone"] if result["phone"] else ""
+            name_str = result["name"] if result["name"] else ""
+            
+            if (lines[i].strip() and 
+                all((info is None or info not in lines[i].lower()) for info in [email_str, phone_str, name_str] if info)):
                 # This line doesn't contain already-extracted info, might be profile
                 # Collect this and following lines as a paragraph
                 start = i
@@ -94,16 +149,31 @@ async def extract_personal_info(resume_text: str) -> Dict[str, Any]:
                 while end < len(lines) and len(lines[end].strip()) > 0 and end < start + 5:
                     end += 1
                 if end - start > 1:  # Must be at least 2 lines to be considered a paragraph
-                    profile_section = ' '.join(lines[start:end])
+                    profile_section = "\n".join(lines[start:end])
                     break
     
+    # Add profile text to result
     if profile_section:
-        # Clean up the profile section
-        profile_section = profile_section.strip()
-        if len(profile_section) > 50:  # Only include if substantial content
-            result["profile_summary"] = profile_section
+        result["profile"] = profile_section
     
-    return result 
+    # Extract address (simple heuristic - line with location indicators)
+    address_indicators = ['st', 'street', 'ave', 'avenue', 'rd', 'road', 'lane', 'drive', 'circle', 
+                         'blvd', 'boulevard', 'apt', 'suite', 'unit', 'box']
+    
+    for i, line in enumerate(lines):
+        line_lower = line.lower()
+        has_address_indicator = any(f" {indicator} " in f" {line_lower} " for indicator in address_indicators)
+        has_zip = bool(re.search(r'\b\d{5}(?:-\d{4})?\b', line))  # US zip code pattern
+        
+        if (has_address_indicator or has_zip) and len(line.strip()) > 10:
+            # Skip lines that contain email or phone
+            if (result["email"] and result["email"] in line) or (result["phone"] and result["phone"] in line):
+                continue
+            
+            result["address"] = line.strip()
+            break
+            
+    return result
 
 async def extract_complete_resume_structure(resume_text: str) -> Dict[str, Any]:
     """

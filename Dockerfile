@@ -12,9 +12,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# Copy requirements and install dependencies
+# Copy requirements file
 COPY requirements.txt .
+
+# Install dependencies
+RUN pip install --no-cache-dir itsdangerous==2.1.2
+RUN pip install --no-cache-dir starlette
 RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir itsdangerous==2.1.2
+
+# Verify installation
+RUN python -c "import itsdangerous; print(f'itsdangerous {itsdangerous.__version__} installed successfully')"
+RUN python -c "from starlette.middleware.sessions import SessionMiddleware; print('SessionMiddleware imported successfully')"
 
 # Copy application code
 COPY . .

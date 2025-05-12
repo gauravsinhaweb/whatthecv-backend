@@ -51,7 +51,7 @@ Reply with a JSON object in this exact format:
 Text to analyze:
 {text[:3000]}"""  # Increased character limit for better accuracy
 
-        result = await model.generate_content(prompt)
+        result = model.generate_content(prompt)
         response_text = result.text
         
         # Extract JSON from the response
@@ -394,7 +394,7 @@ Focus on:
 
         prompt += f"\n\nContent:\n{content}"
 
-        result = await model.generate_content(prompt)
+        result = model.generate_content(prompt)
         text = result.text
         
         improvements = []
