@@ -22,6 +22,7 @@ from app.schemas.resume import (
     EnhancedResumeData
 )
 from app.services.resume_enhance import enhance_resume, extract_resume_structure_fallback
+from app.utils.supabase import upload_file_to_supabase_storage
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -585,6 +586,30 @@ async def process_resume_file(
         # Always save to Doc table regardless of authentication
         text_doc_id = None
         
+        # Upload file to Supabase storage
+        from app.utils.supabase import upload_file_to_supabase_storage
+        
+        # Reset file pointer to beginning to read content for upload
+        await file.seek(0)
+        file_content = await file.read()
+        
+        # Upload to Supabase storage
+        storage_result = None
+        try:
+            storage_result = await upload_file_to_supabase_storage(
+                file_content=file_content,
+                file_name=file.filename,
+                content_type=file.content_type
+            )
+            logger.info(f"File uploaded to Supabase storage: {storage_result['public_url']}")
+            
+            # Check if upload actually succeeded
+            if storage_result.get("upload_failed"):
+                logger.warning(f"Upload was simulated but actually failed: {storage_result.get('error')}")
+        except Exception as storage_error:
+            logger.error(f"Failed to upload file to Supabase storage: {str(storage_error)}", exc_info=True)
+            # Continue processing even if storage upload fails
+        
         # Create document in the Doc table
         from app.services.doc import create_document
         from app.models.doc import DocType
@@ -597,16 +622,24 @@ async def process_resume_file(
             logger.error(f"Personal info extraction failed: {str(extract_error)}")
             personal_info = {}
         
+        # Create metadata with storage info if available
+        metadata = {
+            "is_resume": True,
+            **(personal_info or {})  # Include personal info in metadata for compatibility
+        }
+        
+        # Add storage information to metadata if available
+        if storage_result:
+            metadata["storage_file_name"] = storage_result["file_name"]
+            metadata["storage_url"] = storage_result["public_url"]
+        
         # Create the text document with new field names
         doc_data = {
             "user_id": current_user.id if current_user else None,
             "doc_type": DocType.RESUME.value,
             "file_name": file.filename or "Untitled Resume",
             "extracted_text": extracted_text,
-            "metadata": {
-                "is_resume": True,
-                **(personal_info or {})  # Include personal info in metadata for compatibility
-            }
+            "metadata": metadata
         }
         
         try:
@@ -641,6 +674,15 @@ async def process_resume_file(
             
             # Add extracted text to the result for reference
             analysis_result.extracted_text = extracted_text
+            
+            # Add storage URL to the result if available
+            if storage_result:
+                if not hasattr(analysis_result, "storage_info") or analysis_result.storage_info is None:
+                    analysis_result.storage_info = {}
+                analysis_result.storage_info = {
+                    "file_name": storage_result["file_name"],
+                    "public_url": storage_result["public_url"]
+                }
             
             return analysis_result
         except Exception as analysis_error:
@@ -717,7 +759,23 @@ async def save_resume_to_doc_table(
                 detail="Could not extract sufficient text from the resume file. The file may be corrupted, password-protected, or contain only images."
             )
         
-        # No longer need to read file content since we're not storing binary data
+        # Upload file to Supabase storage
+        # Reset file pointer to beginning to read content for upload
+        await file.seek(0)
+        file_content = await file.read()
+        
+        # Upload to Supabase storage
+        storage_result = None
+        try:
+            storage_result = await upload_file_to_supabase_storage(
+                file_content=file_content,
+                file_name=file.filename,
+                content_type=file.content_type
+            )
+            logger.info(f"File uploaded to Supabase storage: {storage_result['public_url']}")
+        except Exception as storage_error:
+            logger.error(f"Failed to upload file to Supabase storage: {str(storage_error)}", exc_info=True)
+            # Continue processing even if storage upload fails
         
         # Create document in the Doc table
         from app.services.doc import create_document
@@ -727,25 +785,32 @@ async def save_resume_to_doc_table(
         # Extract personal info
         personal_info = await extract_personal_info(extracted_text)
         
+        # Create metadata with storage info if available
+        metadata = {
+            "is_resume": True,
+            **personal_info
+        }
+        
+        # Add storage information to metadata if available
+        if storage_result:
+            metadata["storage_file_name"] = storage_result["file_name"]
+            metadata["storage_url"] = storage_result["public_url"]
+        
         # Create the text document using new field names
         doc_data = {
             "user_id": current_user.id,
             "doc_type": DocType.RESUME.value,
             "file_name": file.filename,
             "extracted_text": extracted_text,
-            "metadata": {
-                "is_resume": True,
-                **personal_info
-            }
+            "metadata": metadata
         }
         
         text_doc = await create_document(db, doc_data)
         
-        # No longer creating file document with binary content
-        
         return {
             "text_doc_id": text_doc.id,
-            "message": "Successfully saved resume to Doc table"
+            "message": "Successfully saved resume to Doc table",
+            "storage_url": storage_result["public_url"] if storage_result else None
         }
         
     except Exception as e:

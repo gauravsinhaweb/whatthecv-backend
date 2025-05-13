@@ -70,6 +70,7 @@ class AIAnalysisResult(BaseModel):
     suggestions: List[Dict[str, Any]] = Field(default_factory=list, description="Improvement suggestions")
     doc_ids: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Associated document IDs")
     extracted_text: Optional[str] = Field(None, description="Extracted text from the resume")
+    storage_info: Optional[Dict[str, str]] = Field(default_factory=dict, description="Supabase storage information")
 
 class ResumeCreate(BaseModel):
     filename: str
